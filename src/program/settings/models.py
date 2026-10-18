@@ -463,6 +463,14 @@ class PlexLibraryModel(Observable):
     url: EmptyOrUrl = Field(
         default="http://localhost:32400", description="Plex server URL"
     )
+    path_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Optional: map Riven library paths to the paths Plex uses, e.g. "
+            '{"/mnt/debrid/riven": "\\\\server\\riven"} when Plex runs on another machine. '
+            "Leave empty when Plex sees the same paths as Riven."
+        ),
+    )
 
 
 class JellyfinLibraryModel(Observable):

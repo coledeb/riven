@@ -1,5 +1,7 @@
 """Plex Updater module"""
 
+import re
+
 from kink import di
 from loguru import logger
 from plexapi.exceptions import BadRequest, Unauthorized
@@ -69,9 +71,44 @@ class PlexUpdater(BaseUpdater):
 
         assert self.api is not None, "Plex API is not initialized"
 
+        path = map_path(path, self.settings.path_mappings)
+        windows = is_windows_path(path)
+
         for section, section_paths in self.sections.items():
             for section_path in section_paths:
-                if path.startswith(section_path):
+                if windows:
+                    # Windows paths are case-insensitive.
+                    matched = path.lower().startswith(section_path.lower())
+                else:
+                    matched = path.startswith(section_path)
+                if matched:
                     return self.api.update_section(section, path)
 
         return False
+
+
+def is_windows_path(path: str) -> bool:
+    return path.startswith("\\\\") or re.match(r"^[A-Za-z]:[\\\\/]", path) is not None
+
+
+def map_path(path: str, mappings: dict[str, str]) -> str:
+    """Translate a Riven path into the path Plex sees, using the longest matching prefix.
+
+    A Windows target (`\\\\server\\share` or `D:\\media`) also gets backslashes,
+    so `/mnt/debrid/riven/shows/X` becomes `\\\\wsl-media\\riven\\shows\\X`.
+    """
+
+    for source in sorted(mappings, key=len, reverse=True):
+        prefix = source.rstrip("/")
+        if path != prefix and not path.startswith(prefix + "/"):
+            continue
+
+        target = mappings[source]
+        rest = path[len(prefix) :]
+
+        if is_windows_path(target):
+            return target.rstrip("\\") + rest.replace("/", "\\")
+
+        return target.rstrip("/") + rest
+
+    return path

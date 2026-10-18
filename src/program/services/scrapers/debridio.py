@@ -33,6 +33,53 @@ SEASON_IN_PATH = re.compile(
 )
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
 
+# Debridio puts languages on a "🌐 Multi Audio|🇫🇷" line as flags. TorBox names
+# often lack them, so they are appended as words RTN recognises (uppercase:
+# RTN does not match "French").
+FLAG_LANGUAGES = {
+    "GB": "ENGLISH",
+    "US": "ENGLISH",
+    "FR": "FRENCH",
+    "ES": "SPANISH",
+    "MX": "LATINO",
+    "IT": "ITALIAN",
+    "DE": "GERMAN",
+    "RU": "RUSSIAN",
+    "UA": "UKRAINIAN",
+    "PL": "POLISH",
+    "PT": "PORTUGUESE",
+    "BR": "PORTUGUESE",
+    "NL": "DUTCH",
+    "SE": "SWEDISH",
+    "NO": "NORWEGIAN",
+    "DK": "DANISH",
+    "FI": "FINNISH",
+    "CZ": "CZECH",
+    "SK": "SLOVAK",
+    "HU": "HUNGARIAN",
+    "RO": "ROMANIAN",
+    "BG": "BULGARIAN",
+    "GR": "GREEK",
+    "TR": "TURKISH",
+    "IL": "HEBREW",
+    "SA": "ARABIC",
+    "IR": "PERSIAN",
+    "IN": "HINDI",
+    "CN": "CHINESE",
+    "TW": "CHINESE",
+    "JP": "JAPANESE",
+    "KR": "KOREAN",
+    "TH": "THAI",
+    "VN": "VIETNAMESE",
+    "ID": "INDONESIAN",
+    "RS": "SERBIAN",
+    "HR": "CROATIAN",
+    "SI": "SLOVENIAN",
+    "LT": "LITHUANIAN",
+    "LV": "LATVIAN",
+    "EE": "ESTONIAN",
+}
+
 
 class DebridioScrapeResponse(BaseModel):
     """Model for Debridio scrape response"""
@@ -47,6 +94,27 @@ class DebridioScrapeResponse(BaseModel):
 def hash_from_url(url: str) -> str | None:
     match = HASH_IN_URL.search(url)
     return match.group(1).lower() if match else None
+
+
+def language_tags(debridio_title: str) -> str:
+    """Language words from Debridio's flag line, e.g. "MULTI FRENCH"."""
+
+    words = list[str]()
+
+    for line in debridio_title.split("\n")[1:]:
+        if "🌐" not in line:
+            continue
+        for raw in line.replace("🌐", "").split("|"):
+            part = raw.strip()
+            if part in ("Multi Audio", "Dual Audio"):
+                words.append(part.split()[0].upper())
+            # A flag is two regional-indicator characters.
+            elif len(part) == 2 and all(0x1F1E6 <= ord(c) <= 0x1F1FF for c in part):
+                code = "".join(chr(ord(c) - 0x1F1E6 + ord("A")) for c in part)
+                if language := FLAG_LANGUAGES.get(code):
+                    words.append(language)
+
+    return " ".join(dict.fromkeys(words))
 
 
 def torrent_title(name: str, files: list[dict[str, Any]]) -> str:
@@ -144,6 +212,13 @@ class Debridio(ScraperService[DebridioConfig]):
 
         return base64.b64encode(json.dumps(config).encode()).decode()
 
+    @staticmethod
+    def _status_message(status: int) -> str:
+        if status in (401, 403):
+            # Debridio answers a wrong key with 403 "Subscription is inactive".
+            return f"Debridio rejected the API key or the subscription is inactive ({status})"
+        return f"Debridio request failed - Status Code: {status}"
+
     def validate(self) -> bool:
         """Validate the Debridio settings."""
 
@@ -168,7 +243,7 @@ class Debridio(ScraperService[DebridioConfig]):
 
             if not response.ok:
                 # Never log the URL: it embeds both API keys.
-                logger.error(f"Debridio manifest returned {response.status_code}")
+                logger.error(self._status_message(response.status_code))
 
             return response.ok
         except Exception as e:
@@ -208,7 +283,7 @@ class Debridio(ScraperService[DebridioConfig]):
 
         if not response.ok:
             logger.error(
-                f"Debridio request failed for {item.log_string} - Status Code: {response.status_code}"
+                f"{self._status_message(response.status_code)} for {item.log_string}"
             )
             return {}
 
@@ -216,10 +291,12 @@ class Debridio(ScraperService[DebridioConfig]):
 
         # Debridio's file-name titles are only a fallback if TorBox can't answer.
         fallback = dict[str, str]()
+        languages = dict[str, str]()
         for stream in data.streams:
             infohash = hash_from_url(stream.url)
             if infohash and infohash not in fallback:
                 fallback[infohash] = stream.title.split("\n")[0]
+                languages[infohash] = language_tags(stream.title)
             if len(fallback) >= MAX_HASHES:
                 break
 
@@ -239,6 +316,13 @@ class Debridio(ScraperService[DebridioConfig]):
                 for infohash, entry in cached.items()
                 if infohash in fallback
             }
+
+        torrents = {
+            infohash: (
+                f"{title} [{languages[infohash]}]" if languages.get(infohash) else title
+            )
+            for infohash, title in torrents.items()
+        }
 
         if torrents:
             logger.log(

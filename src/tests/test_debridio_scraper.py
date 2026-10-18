@@ -3,10 +3,16 @@ import json
 
 import httpx
 import pytest
+from RTN import parse
 
 from program.media.item import Movie
 from program.services.scrapers import debridio
-from program.services.scrapers.debridio import Debridio, hash_from_url, torrent_title
+from program.services.scrapers.debridio import (
+    Debridio,
+    hash_from_url,
+    language_tags,
+    torrent_title,
+)
 from program.settings import settings_manager
 from program.utils.request import SmartSession
 
@@ -198,3 +204,34 @@ def test_correct_names_are_left_alone():
         torrent_title(single, files("Show.S01E02.1080p.WEB-DL.mkv", "sample.txt"))
         == single
     )
+
+
+def test_language_flags_become_words_riven_can_filter():
+    title = "Movie.2000.1080p.mkv\n⚡ 📦 📺 1080p 💾 1.5 GB  \n🌐 Multi Audio|🇫🇷|🇲🇽"
+    assert language_tags(title) == "MULTI FRENCH LATINO"
+    assert language_tags("Movie.2000.1080p.mkv\n🌐 Multi Subs") == ""
+    assert language_tags("Movie.2000.1080p.mkv\n⚡ 1080p") == ""
+
+
+def test_languages_are_appended_to_torbox_names(scraper, api):
+    api.streams[0]["title"] += "\n🌐 🇬🇧|🇷🇺"
+
+    results = scraper.scrape(movie())
+
+    assert results[PACK] == "Movie Collection 1080p BluRay [ENGLISH RUSSIAN]"
+    assert parse(results[PACK]).languages == ["en", "ru"]
+    assert results[SINGLE] == "Movie.2000.2160p.WEB-DL"
+
+
+def test_rejected_key_says_so(scraper, api, monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        debridio.logger, "error", lambda msg, *_a, **_k: logged.append(msg)
+    )
+    api.handler = lambda _request: httpx.Response(
+        403, json={"message": "Subscription is inactive. Server denied access."}
+    )
+    scraper.session._client = httpx.Client(transport=httpx.MockTransport(api.handler))
+
+    assert scraper.scrape(movie()) == {}
+    assert "rejected the API key or the subscription is inactive" in logged[0]
