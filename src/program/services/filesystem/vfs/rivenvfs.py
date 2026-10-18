@@ -39,6 +39,7 @@ import trio
 import os
 import shutil
 import errno
+import json
 import subprocess
 from typing import (
     TYPE_CHECKING,
@@ -749,12 +750,14 @@ class RivenVFS(pyfuse3.Operations):
 
         logger.log("VFS", "Full sync: re-matching library profiles")
 
+        # Fingerprint the whole profile config as JSON. hash() of model_dump() items
+        # raised TypeError for list-valued rules, so every reload rebuilt the tree.
         try:
             profiles = settings_manager.settings.filesystem.library_profiles or {}
             current_profile_hash = hash(
-                frozenset(
-                    (k, hash(frozenset(v.filter_rules.model_dump().items())))
-                    for k, v in profiles.items()
+                json.dumps(
+                    {k: v.model_dump(mode="json") for k, v in profiles.items()},
+                    sort_keys=True,
                 )
             )
         except Exception:
@@ -808,7 +811,9 @@ class RivenVFS(pyfuse3.Operations):
 
             logger.debug(f"Re-matched {rematched_count} entries with updated profiles")
 
-        # Step 2: Clear VFS tree and rebuild from scratch
+        # Step 2: Clear VFS tree and rebuild from scratch. Hold the tree lock for the
+        # whole rebuild so FUSE readers wait instead of seeing a half-built tree
+        # (a scan would otherwise find whole libraries missing).
         logger.debug("Clearing VFS tree for rebuild")
 
         with self._tree_lock:
@@ -816,41 +821,45 @@ class RivenVFS(pyfuse3.Operations):
             self._root = VFSRoot()
             self._inode_to_node = {pyfuse3.ROOT_INODE: self._root}
 
-        # Clear pending invalidations for this sync
-        self._pending_invalidations.clear()
+            # Clear pending invalidations for this sync
+            self._pending_invalidations.clear()
 
-        # Step 3: Re-register all items
-        logger.debug(f"Re-registering {len(item_ids)} items")
+            # Step 3: Re-register all items
+            logger.debug(f"Re-registering {len(item_ids)} items")
 
-        registered_count = 0
+            registered_count = 0
 
-        with db_session() as session:
-            from program.media.item import MediaItem
+            with db_session() as session:
+                from program.media.item import MediaItem
 
-            items = session.query(MediaItem).filter(MediaItem.id.in_(item_ids)).all()
-            item_map = {item.id: item for item in items}
+                items = (
+                    session.query(MediaItem).filter(MediaItem.id.in_(item_ids)).all()
+                )
+                item_map = {item.id: item for item in items}
 
-            for item_id in item_ids:
-                try:
-                    item = item_map.get(item_id)
+                for item_id in item_ids:
+                    try:
+                        item = item_map.get(item_id)
 
-                    if not item:
-                        continue
+                        if not item:
+                            continue
 
-                    # Use add() to register the item (handles both media and subtitles)
-                    if self.add(item):
-                        registered_count += 1
-                except Exception as e:
-                    logger.exception(f"Failed to register item {item_id}: {e}")
-            if registered_count > 0:
-                session.commit()
+                        # Use add() to register the item (handles both media and subtitles)
+                        if self.add(item):
+                            registered_count += 1
+                    except Exception as e:
+                        logger.exception(f"Failed to register item {item_id}: {e}")
+                if registered_count > 0:
+                    session.commit()
 
-        logger.log("VFS", f"Full sync complete: re-registered {registered_count} items")
+            logger.log(
+                "VFS", f"Full sync complete: re-registered {registered_count} items"
+            )
 
-        # Step 4: Ensure persistent library profile directories exist
-        # This creates /movies, /shows, and /{profile}/movies, /{profile}/shows
-        # These directories are never pruned, even when empty
-        self._ensure_library_profile_directories()
+            # Step 4: Ensure persistent library profile directories exist
+            # This creates /movies, /shows, and /{profile}/movies, /{profile}/shows
+            # These directories are never pruned, even when empty
+            self._ensure_library_profile_directories()
 
         # Step 5: Batch invalidate all collected inodes
         # This is critical: reduces syscalls from O(n) to O(1)

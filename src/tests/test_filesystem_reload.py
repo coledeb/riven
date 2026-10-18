@@ -78,3 +78,95 @@ def test_reload_replaces_dead_mount():
 
     assert FakeVFS.created == 2
     assert second.riven_vfs.mounted
+
+
+class FakeQuery:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def filter(self, *args):
+        return self
+
+    def all(self):
+        return self.rows
+
+
+class FakeSession:
+    def __init__(self, entries, items):
+        self.entries, self.items = entries, items
+
+    def query(self, model):
+        return FakeQuery(self.entries if model.__name__ == "MediaEntry" else self.items)
+
+    def commit(self):
+        pass
+
+
+def _bare_vfs(monkeypatch, entries=(), items=()):
+    import contextlib
+    import threading
+
+    import program.services.filesystem.vfs.rivenvfs as rivenvfs_module
+    import program.services.library_profile_matcher as matcher_module
+
+    sessions = []
+
+    @contextlib.contextmanager
+    def fake_db_session():
+        sessions.append(1)
+        yield FakeSession(list(entries), list(items))
+
+    class FakeMatcher:
+        def get_matching_profiles(self, item):
+            return []
+
+    monkeypatch.setattr(rivenvfs_module, "db_session", fake_db_session)
+    monkeypatch.setattr(matcher_module, "LibraryProfileMatcher", FakeMatcher)
+
+    vfs = object.__new__(rivenvfs_module.RivenVFS)
+    vfs._tree_lock = threading.RLock()
+    vfs._root = None
+    vfs._inode_to_node = {}
+    vfs._pending_invalidations = set()
+    vfs._last_profile_hash = None
+    vfs._ensure_library_profile_directories = lambda: None
+    return vfs, sessions
+
+
+def test_full_sync_skips_when_list_valued_profiles_unchanged(monkeypatch):
+    from program.settings.models import LibraryProfile, LibraryProfileFilterRules
+
+    profile = LibraryProfile(
+        name="Kids",
+        library_path="/kids",
+        enabled=False,
+        filter_rules=LibraryProfileFilterRules(content_ratings=["G", "PG"]),
+    )
+    monkeypatch.setattr(
+        settings_manager.settings.filesystem, "library_profiles", {"kids": profile}
+    )
+    vfs, sessions = _bare_vfs(monkeypatch)
+
+    vfs._sync_full()
+    assert vfs._last_profile_hash is not None
+    rebuilt = len(sessions)
+
+    vfs._sync_full()
+    assert len(sessions) == rebuilt  # unchanged profiles: no rebuild
+
+    profile.enabled = True
+    vfs._sync_full()
+    assert len(sessions) > rebuilt  # any profile change still rebuilds
+
+
+def test_full_sync_holds_tree_lock_while_rebuilding(monkeypatch):
+    item = type("Item", (), {"id": 7})()
+    entry = type("Entry", (), {"id": 1, "media_item": item, "library_profiles": []})()
+    vfs, _ = _bare_vfs(monkeypatch, entries=[entry], items=[item])
+    monkeypatch.setattr(settings_manager.settings.filesystem, "library_profiles", {})
+    owned = []
+    vfs.add = lambda it: owned.append(vfs._tree_lock._is_owned()) or True
+
+    vfs._sync_full()
+
+    assert owned == [True]

@@ -43,6 +43,7 @@
 > - **Torrentio language flags kept.** Torrentio's flag line (`🇬🇧 / 🇷🇺`) is appended to titles as words, so language exclusions also catch dubs whose names don't say the language (e.g. Cyrillic-only names).
 > - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses, e.g. `{"/mnt/debrid/riven": "\\\\server\\riven"}`. Windows targets get backslashes and case-insensitive matching. Leave it empty when Plex sees the same paths as Riven.
 > - **Settings changes no longer break the mount.** Saving settings used to build a second RivenVFS and mount it over the running one, which logged "RivenVFS not mounted" or crashed the backend once the library had content. The running mount is now kept and given the new downloader; it's only remounted if `mount_path` changes or the mount has died. Startup also waits for the mount before checking it.
+> - **No library flicker on settings changes.** Every save used to clear the whole VFS tree and rebuild it, because the "library profiles unchanged" check crashed on list-valued filter rules (the default `example_kids` profile has them). While it rebuilt, folders were briefly missing, and a media server scanning then could drop items. The tree is now only rebuilt when a profile actually changes, and readers wait for the rebuild to finish instead of seeing a half-built tree.
 
 Services currently supported:
 
