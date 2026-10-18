@@ -97,12 +97,13 @@ _LANGUAGE_FIELD_HELP = {
 
 
 def _languages_blurb() -> str:
+    # Line breaks and **bold** are rendered by the coledeb/riven-frontend settings form.
     codes = ", ".join(
-        f"{name} = {code}"
+        f"{name} = **{code}**"
         for code, name in sorted(LANGUAGES_TRANSLATION_TABLE.items(), key=lambda kv: kv[1])
     )
     return (
-        "Enter two-letter language codes. Each code once per list. "
+        "Enter two-letter language codes. Each code once per list.\n\n"
         f"Languages Riven can detect: {codes}."
     )
 
@@ -112,7 +113,8 @@ def _language_list() -> dict[str, Any]:
     return {
         "type": "array",
         "uniqueItems": True,
-        "items": {"type": "string", "pattern": f"^({codes})$"},
+        "items": {"type": "string", "pattern": f"^({codes})$", "x-ui-options": {"hideTitle": True}},
+        "x-ui-options": {"orderable": False},
     }
 
 

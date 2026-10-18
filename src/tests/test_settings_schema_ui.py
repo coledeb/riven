@@ -18,6 +18,8 @@ def test_schema_titles_and_lists():
     assert defs["QualityRankModel"]["properties"]["av1"]["title"] == "AV1"
     exclude = defs["LanguagesConfig"]["properties"]["exclude"]
     assert exclude["uniqueItems"] is True and "pattern" in exclude["items"]
+    assert exclude["x-ui-options"] == {"orderable": False}
+    assert exclude["items"]["x-ui-options"] == {"hideTitle": True}
     order = defs["ScraperModel"]["properties"]["anime_audio_order"]
     assert order["items"]["readOnly"] is True
     assert order["x-ui-options"] == {"addable": False, "removable": False}

@@ -934,7 +934,7 @@ class ScraperModel(Observable):
             "dubbed = dubbed only."
         ),
         json_schema_extra={
-            "items": {"type": "string", "readOnly": True},
+            "items": {"type": "string", "readOnly": True, "x-ui-options": {"hideTitle": True}},
             "x-ui-options": {"addable": False, "removable": False},
         },
     )
