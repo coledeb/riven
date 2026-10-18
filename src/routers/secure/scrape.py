@@ -403,6 +403,20 @@ async def resolve_torrent_container(
     return None, last_error or "No files found in torrent"
 
 
+def link_parents(item: MediaItem) -> None:
+    """Explicitly link parents to avoid lazy-loading on detached objects."""
+
+    if isinstance(item, Show):
+        for season in item.seasons:
+            season.parent = item
+            for episode in season.episodes:
+                episode.parent = season
+
+    elif isinstance(item, Season):
+        for episode in item.episodes:
+            episode.parent = item
+
+
 def resolve_media_item(
     session: Session,
     item_id: int | None = None,
@@ -627,16 +641,7 @@ def scrape_item(
 
                 # Detach item from session to avoid threading issues in scraper
                 try:
-                    # Explicitly link parents to avoid lazy-loading on detached objects
-                    if isinstance(item, Show):
-                        for season in item.seasons:
-                            season.parent = item
-                            for episode in season.episodes:
-                                episode.parent = season
-
-                    elif isinstance(item, Season):
-                        for episode in item.episodes:
-                            episode.parent = item
+                    link_parents(item)
 
                     session.expunge(item)
                     if isinstance(item, Show):
@@ -733,6 +738,8 @@ def scrape_item(
             session, item_id, tmdb_id, tvdb_id, imdb_id, target_media_type
         )
         assert item
+        # The item comes back detached; scrapers read season.parent from worker threads
+        link_parents(item)
         apply_custom_params(item, custom_title, custom_imdb_id)
 
         with settings_manager.override(**overrides):
