@@ -151,6 +151,101 @@ class OverseerrAPI:
 
         return media_items
 
+    def media_ids(self) -> dict[tuple[str, str], int]:
+        """Map ("movie"|"tv", tmdb id) and ("tvdb", tvdb id) to Overseerr media ids."""
+
+        ids = dict[tuple[str, str], int]()
+        skip = 0
+
+        while True:
+            response = self.session.get(
+                f"api/v1/media?take=100&skip={skip}&filter=all", timeout=30
+            )
+
+            if not response.ok:
+                raise OverseerrAPIError(f"media list failed: {response.status_code}")
+
+            results = response.json().get("results") or []
+
+            for media in results:
+                if media.get("tmdbId"):
+                    ids[(media["mediaType"], str(media["tmdbId"]))] = media["id"]
+
+                if media.get("mediaType") == "tv" and media.get("tvdbId"):
+                    ids[("tvdb", str(media["tvdbId"]))] = media["id"]
+
+            if len(results) < 100:
+                return ids
+
+            skip += 100
+
+    def _as_user(self, user_id: int) -> dict[str, str]:
+        return {"X-Api-User": str(user_id)} if user_id else {}
+
+    def create_issue(
+        self,
+        media_id: int,
+        message: str,
+        season: int = 0,
+        episode: int = 0,
+        user_id: int = 0,
+    ) -> int:
+        """Open an issue ("other" type) and return its id."""
+
+        response = self.session.post(
+            "api/v1/issue",
+            json={
+                "issueType": 4,
+                "message": message,
+                "mediaId": media_id,
+                "problemSeason": season,
+                "problemEpisode": episode,
+            },
+            headers=self._as_user(user_id),
+            timeout=30,
+        )
+
+        if not response.ok:
+            raise OverseerrAPIError(f"issue create failed: {response.status_code}")
+
+        return response.json()["id"]
+
+    def comment_issue(self, issue_id: int, message: str, user_id: int = 0) -> bool:
+        """Comment on an issue. False if the issue no longer exists."""
+
+        response = self.session.post(
+            f"api/v1/issue/{issue_id}/comment",
+            json={"message": message},
+            headers=self._as_user(user_id),
+            timeout=30,
+        )
+
+        if response.status_code == 404:
+            return False
+
+        if not response.ok:
+            raise OverseerrAPIError(f"issue comment failed: {response.status_code}")
+
+        return True
+
+    def resolve_issue(self, issue_id: int, user_id: int = 0) -> bool:
+        """Mark an issue resolved. False if the issue no longer exists."""
+
+        response = self.session.post(
+            f"api/v1/issue/{issue_id}/resolved",
+            json={},
+            headers=self._as_user(user_id),
+            timeout=30,
+        )
+
+        if response.status_code == 404:
+            return False
+
+        if not response.ok:
+            raise OverseerrAPIError(f"issue resolve failed: {response.status_code}")
+
+        return True
+
     def delete_request(self, mediaId: int) -> bool:
         """Delete request from Overseerr"""
 

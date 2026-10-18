@@ -95,6 +95,18 @@ class ProgramScheduler:
                 "interval": torbox.account_import.interval
             }
 
+        # Report items that stay missing as Overseerr issues
+        overseerr = settings_manager.settings.content.overseerr
+
+        if overseerr.enabled and overseerr.issues.enabled:
+            from program.services.content.overseerr_issues import (
+                overseerr_issues,
+            )
+
+            scheduled_functions[overseerr_issues] = {
+                "interval": overseerr.issues.interval
+            }
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}

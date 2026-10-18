@@ -574,6 +574,41 @@ class MdblistModel(Updatable):
     )
 
 
+class OverseerrIssuesModel(Observable):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Open an Overseerr/Seerr issue for released movies and episodes that "
+            "still have no file, and resolve it once they're available. "
+            "Applies after a restart."
+        ),
+    )
+    after_minutes: int = Field(
+        default=30,
+        ge=5,
+        description="Minutes an item must stay missing before an issue is opened",
+    )
+    release_grace_hours: int = Field(
+        default=24,
+        ge=0,
+        description=(
+            "Hours after the release date before a missing item counts "
+            "(releases often appear hours after the air date)"
+        ),
+    )
+    interval: int = Field(
+        default=300, ge=60, description="Seconds between checks"
+    )
+    user_id: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Overseerr user the issues and comments come from (needs the "
+            "issue permissions; 0 = the API key's owner)"
+        ),
+    )
+
+
 class OverseerrModel(Updatable):
     enabled: bool = Field(default=False, description="Enable Overseerr integration")
     url: EmptyOrUrl = Field(
@@ -585,6 +620,10 @@ class OverseerrModel(Updatable):
     )
     update_interval: int = Field(
         default=60, ge=1, description="Update interval in seconds"
+    )
+    issues: OverseerrIssuesModel = Field(
+        default_factory=lambda: OverseerrIssuesModel(),
+        description="Report items Riven can't find a file for as Overseerr issues",
     )
 
 
