@@ -1,6 +1,8 @@
 """Logging utils"""
 
+import contextlib
 import os
+import re
 import sys
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
@@ -14,6 +16,31 @@ if TYPE_CHECKING:
     from loguru import HandlerConfig
 
 last_logs_cleaned_time: datetime | None = None
+
+# Debrid CDN links carry the account key in the query string (TorBox: ?token=<api key>)
+_SECRET_QUERY_RE = re.compile(
+    r"([?&](?:token|api_?key|apikey|key|password)=)[^&\s'\"<>]+", re.IGNORECASE
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace secret query-string values in URLs with REDACTED."""
+    return _SECRET_QUERY_RE.sub(r"\1REDACTED", text)
+
+
+def _redact_record(record) -> None:
+    """Loguru patcher: redact secrets from the message and the exception text."""
+    record["message"] = redact_secrets(record["message"])
+    exc = record["exception"]
+    seen = set()
+    err = exc.value if exc else None
+    while err is not None and id(err) not in seen:
+        seen.add(id(err))
+        with contextlib.suppress(Exception):
+            err.args = tuple(
+                redact_secrets(a) if isinstance(a, str) else a for a in err.args
+            )
+        err = err.__cause__ or err.__context__
 
 
 def setup_logger(
@@ -134,12 +161,13 @@ def setup_logger(
                     compression_value if compression_value != "disabled" else None
                 ),
                 "backtrace": False,
-                "diagnose": True,
+                # diagnose prints local variables (request URLs with keys) in tracebacks
+                "diagnose": False,
                 "enqueue": True,
             }
         )
 
-    logger.configure(handlers=handlers)
+    logger.configure(handlers=handlers, patcher=_redact_record)
 
 
 def log_cleaner():
