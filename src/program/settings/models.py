@@ -70,6 +70,28 @@ class AllDebridModel(Observable):
     api_key: str = Field(default="", description="AllDebrid API key")
 
 
+class TorBoxImportModel(Observable):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Link torrents added to the TorBox account outside Riven (e.g. with "
+            "Debrid Media Manager) into the library. Only fills missing movies and "
+            "episodes; deleting a torrent Riven uses makes Riven prefer another "
+            "account torrent for it. Never deletes. Applies after a restart."
+        ),
+    )
+    interval: int = Field(
+        default=120, ge=30, description="Seconds between TorBox account checks"
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Apprise URLs (e.g. a Discord webhook) told once when a torrent "
+            "can't be matched to a title"
+        ),
+    )
+
+
 class TorBoxModel(Observable):
     enabled: bool = Field(default=False, description="Enable TorBox")
     api_key: str = Field(default="", description="TorBox API key")
@@ -81,6 +103,10 @@ class TorBoxModel(Observable):
             "torrents still used by Riven's library are always kept. Leave on if "
             "other tools share the TorBox account."
         ),
+    )
+    account_import: TorBoxImportModel = Field(
+        default_factory=lambda: TorBoxImportModel(),
+        description="Import torrents added to the TorBox account outside Riven",
     )
 
 

@@ -307,6 +307,29 @@ class TorBoxDownloader(DownloaderBase):
     def _find_torrent(self, infohash: str) -> dict[str, Any] | None:
         """Return the account's torrent for `infohash`, read fresh from TorBox."""
 
+        return next(
+            (
+                t
+                for t in self._iter_account()
+                if str(t.get("hash", "")).lower() == infohash
+            ),
+            None,
+        )
+
+    def list_torrents(self) -> list[dict[str, Any]]:
+        """Every torrent on the account, read fresh from TorBox."""
+
+        return list(self._iter_account())
+
+    def created_ids(self) -> set[str]:
+        """Torrent ids Riven added during this run."""
+
+        with self._lock:
+            return set(self._created)
+
+    def _iter_account(self):
+        """Yield the account's torrents page by page, read fresh from TorBox."""
+
         offset = 0
         seen = set[int]()
 
@@ -329,15 +352,12 @@ class TorBoxDownloader(DownloaderBase):
                 )
 
             page = body.get("data") or []
-
-            for torrent in page:
-                if str(torrent.get("hash", "")).lower() == infohash:
-                    return torrent
-
             new_ids = {t.get("id") for t in page} - seen
 
+            yield from (t for t in page if t.get("id") in new_ids)
+
             if len(page) < LIST_PAGE_SIZE or not new_ids:
-                return None
+                return
 
             seen |= new_ids
             offset += len(page)

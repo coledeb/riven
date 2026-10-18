@@ -166,12 +166,18 @@ class VFSDatabase:
 
                     session.commit()
 
-                    di[Program].em.add_event(
-                        Event(
-                            "VFS",
-                            item_id,
-                        )
+                    from program.services.downloaders.torbox_import import (
+                        account_import,
                     )
+
+                    # Another torrent on the account may cover the item already
+                    if not account_import.offer(item_id):
+                        di[Program].em.add_event(
+                            Event(
+                                "VFS",
+                                item_id,
+                            )
+                        )
 
                     return None
                 raise

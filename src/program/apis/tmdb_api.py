@@ -82,3 +82,32 @@ class TMDBApi:
                 "release_dates": release_dates,
             }
         )
+
+    def search(self, kind: str, query: str, year: int | None = None) -> list[dict]:
+        """Search TMDB movies (`kind="movie"`) or shows (`kind="tv"`) by title."""
+
+        params: dict[str, str | int] = {"query": query, "include_adult": "false"}
+
+        if year:
+            params["year" if kind == "movie" else "first_air_date_year"] = year
+
+        response = self.session.get(f"search/{kind}", params=params)
+
+        if not response.ok:
+            raise TMDBApiError(f"TMDB search failed with HTTP {response.status_code}")
+
+        return response.json().get("results") or []
+
+    def get_tvdb_id(self, tmdb_tv_id: int | str) -> str | None:
+        """Return the TVDB id TMDB lists for a show, if any."""
+
+        response = self.session.get(f"tv/{tmdb_tv_id}/external_ids")
+
+        if not response.ok:
+            raise TMDBApiError(
+                f"TMDB external ids failed with HTTP {response.status_code}"
+            )
+
+        tvdb_id = response.json().get("tvdb_id")
+
+        return str(tvdb_id) if tvdb_id else None

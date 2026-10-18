@@ -83,6 +83,18 @@ class ProgramScheduler:
         if clean_interval > 0:
             scheduled_functions[log_cleaner] = {"interval": clean_interval}
 
+        # Link torrents added to the TorBox account outside Riven
+        torbox = settings_manager.settings.downloaders.torbox
+
+        if torbox.enabled and torbox.account_import.enabled:
+            from program.services.downloaders.torbox_import import (
+                torbox_account_import,
+            )
+
+            scheduled_functions[torbox_account_import] = {
+                "interval": torbox.account_import.interval
+            }
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
