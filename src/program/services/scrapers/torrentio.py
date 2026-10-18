@@ -6,6 +6,7 @@ from requests import HTTPError
 
 from program.media.item import MediaItem
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.languages import flag_languages, with_languages
 from program.settings import settings_manager
 from program.settings.models import TorrentioConfig
 from program.utils.request import SmartSession
@@ -137,9 +138,11 @@ class Torrentio(ScraperService[TorrentioConfig]):
             if not stream.info_hash:
                 continue
 
-            stream_title = stream.title.split("\n👤")[0]
+            stream_title, _, stats = stream.title.partition("\n👤")
             raw_title = stream_title.split("\n")[0]
-            torrents[stream.info_hash] = raw_title
+            # Languages are on the line after the "👤 seeders 💾 size" line.
+            languages = flag_languages(stats.partition("\n")[2])
+            torrents[stream.info_hash] = with_languages(raw_title, languages)
 
         if torrents:
             logger.log(

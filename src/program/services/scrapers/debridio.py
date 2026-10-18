@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from program.media.item import MediaItem
 from program.services.scrapers.base import ScraperService
+from program.services.scrapers.languages import flag_languages, with_languages
 from program.settings import settings_manager
 from program.settings.models import DebridioConfig
 from program.utils.request import SmartSession
@@ -32,53 +33,6 @@ SEASON_IN_PATH = re.compile(
     r"\bS(\d{1,2})[ ._-]?E\d{1,4}\b|\bSeason[ ._-]?(\d{1,2})\b", re.IGNORECASE
 )
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
-
-# Debridio puts languages on a "🌐 Multi Audio|🇫🇷" line as flags. TorBox names
-# often lack them, so they are appended as words RTN recognises (uppercase:
-# RTN does not match "French").
-FLAG_LANGUAGES = {
-    "GB": "ENGLISH",
-    "US": "ENGLISH",
-    "FR": "FRENCH",
-    "ES": "SPANISH",
-    "MX": "LATINO",
-    "IT": "ITALIAN",
-    "DE": "GERMAN",
-    "RU": "RUSSIAN",
-    "UA": "UKRAINIAN",
-    "PL": "POLISH",
-    "PT": "PORTUGUESE",
-    "BR": "PORTUGUESE",
-    "NL": "DUTCH",
-    "SE": "SWEDISH",
-    "NO": "NORWEGIAN",
-    "DK": "DANISH",
-    "FI": "FINNISH",
-    "CZ": "CZECH",
-    "SK": "SLOVAK",
-    "HU": "HUNGARIAN",
-    "RO": "ROMANIAN",
-    "BG": "BULGARIAN",
-    "GR": "GREEK",
-    "TR": "TURKISH",
-    "IL": "HEBREW",
-    "SA": "ARABIC",
-    "IR": "PERSIAN",
-    "IN": "HINDI",
-    "CN": "CHINESE",
-    "TW": "CHINESE",
-    "JP": "JAPANESE",
-    "KR": "KOREAN",
-    "TH": "THAI",
-    "VN": "VIETNAMESE",
-    "ID": "INDONESIAN",
-    "RS": "SERBIAN",
-    "HR": "CROATIAN",
-    "SI": "SLOVENIAN",
-    "LT": "LITHUANIAN",
-    "LV": "LATVIAN",
-    "EE": "ESTONIAN",
-}
 
 
 class DebridioScrapeResponse(BaseModel):
@@ -97,24 +51,10 @@ def hash_from_url(url: str) -> str | None:
 
 
 def language_tags(debridio_title: str) -> str:
-    """Language words from Debridio's flag line, e.g. "MULTI FRENCH"."""
+    """Language words from Debridio's "🌐 Multi Audio|🇫🇷" line, e.g. "MULTI FRENCH"."""
 
-    words = list[str]()
-
-    for line in debridio_title.split("\n")[1:]:
-        if "🌐" not in line:
-            continue
-        for raw in line.replace("🌐", "").split("|"):
-            part = raw.strip()
-            if part in ("Multi Audio", "Dual Audio"):
-                words.append(part.split()[0].upper())
-            # A flag is two regional-indicator characters.
-            elif len(part) == 2 and all(0x1F1E6 <= ord(c) <= 0x1F1FF for c in part):
-                code = "".join(chr(ord(c) - 0x1F1E6 + ord("A")) for c in part)
-                if language := FLAG_LANGUAGES.get(code):
-                    words.append(language)
-
-    return " ".join(dict.fromkeys(words))
+    lines = [line for line in debridio_title.split("\n")[1:] if "🌐" in line]
+    return " ".join(dict.fromkeys(" ".join(map(flag_languages, lines)).split()))
 
 
 def torrent_title(name: str, files: list[dict[str, Any]]) -> str:
@@ -318,9 +258,7 @@ class Debridio(ScraperService[DebridioConfig]):
             }
 
         torrents = {
-            infohash: (
-                f"{title} [{languages[infohash]}]" if languages.get(infohash) else title
-            )
+            infohash: with_languages(title, languages.get(infohash, ""))
             for infohash, title in torrents.items()
         }
 
