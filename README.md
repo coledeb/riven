@@ -32,6 +32,7 @@
 > - **Few link requests.** Links are resolved only when a file is actually opened, then reused.
 > - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
 > - **Shared accounts are safe.** Riven only deletes torrents it created itself, never ones that were already on the account.
+> - **Debridio scraper (TorBox only).** Debridio's Stremio addon returns playback links whose file-name titles hide season packs. The scraper takes each hash from the link, then asks TorBox's free `checkcached` (up to 100 hashes per call, paced at 60/min) for the real torrent name and file list. Uncached results are dropped. If TorBox is throttled, it falls back to Debridio's titles without waiting.
 >
 > The TorBox limits and API behaviour this work relies on come from the [Debrid Media Manager notes on TorBox limits](https://notes.debridmediamanager.com/providers/torbox-limits/), written alongside [zurg](https://github.com/debridmediamanager/zurg-public). Many thanks to the DMM/zurg project for documenting them.
 
@@ -41,7 +42,7 @@ Services currently supported:
 | ----------------- | --------------------------------------------------------------------------------- |
 | Debrid services   | Real Debrid, All Debrid, Debrid-Link, TorBox                                      |
 | Content services  | Plex Watchlist, Overseerr, Mdblist, Listrr, Trakt                                 |
-| Scraping services | AIOStreams, Comet, Jackett, Torrentio, Orionoid, Mediafusion, Prowlarr, Zilean, Rarbg |
+| Scraping services | AIOStreams, Comet, Debridio, Jackett, Torrentio, Orionoid, Mediafusion, Prowlarr, Zilean, Rarbg |
 | Media servers     | Plex, Jellyfin, Emby                                                              |
 
 and more to come!

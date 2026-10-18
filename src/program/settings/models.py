@@ -657,6 +657,22 @@ class TorrentioConfig(Observable):
     )
 
 
+class DebridioConfig(Observable):
+    enabled: bool = Field(default=False, description="Enable Debridio scraper (TorBox only)")
+    api_key: str = Field(default="", description="Debridio API key")
+    url: EmptyOrUrl = Field(
+        default="https://addon.debridio.com", description="Debridio addon URL"
+    )
+    timeout: int = Field(default=30, ge=1, description="Request timeout in seconds")
+    retries: int = Field(
+        default=1, ge=0, description="Number of retries for failed requests"
+    )
+    ratelimit: bool = Field(default=True, description="Enable rate limiting")
+    proxy_url: EmptyOrUrl = Field(
+        default="", description="Proxy URL for Debridio requests"
+    )
+
+
 class CometConfig(Observable):
     enabled: bool = Field(default=False, description="Enable Comet scraper")
     url: EmptyOrUrl = Field(default="http://localhost:8000", description="Comet URL")
@@ -799,6 +815,9 @@ class ScraperModel(Observable):
     )
     torrentio: TorrentioConfig = Field(
         default_factory=lambda: TorrentioConfig(), description="Torrentio configuration"
+    )
+    debridio: DebridioConfig = Field(
+        default_factory=lambda: DebridioConfig(), description="Debridio configuration"
     )
     jackett: JackettConfig = Field(
         default_factory=lambda: JackettConfig(), description="Jackett configuration"

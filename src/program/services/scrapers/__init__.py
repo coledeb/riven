@@ -14,6 +14,7 @@ from program.media.stream import Stream
 from program.services.scrapers.aiostreams import AIOStreams
 from program.services.scrapers.base import ScraperService
 from program.services.scrapers.comet import Comet
+from program.services.scrapers.debridio import Debridio
 from program.services.scrapers.jackett import Jackett
 from program.services.scrapers.mediafusion import Mediafusion
 from program.services.scrapers.orionoid import Orionoid
@@ -39,6 +40,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
         self.services = {
             AIOStreams: AIOStreams(),
             Comet: Comet(),
+            Debridio: Debridio(),
             Jackett: Jackett(),
             Mediafusion: Mediafusion(),
             Orionoid: Orionoid(),

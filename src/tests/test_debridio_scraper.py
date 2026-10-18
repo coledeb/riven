@@ -1,0 +1,200 @@
+import base64
+import json
+
+import httpx
+import pytest
+
+from program.media.item import Movie
+from program.services.scrapers import debridio
+from program.services.scrapers.debridio import Debridio, hash_from_url, torrent_title
+from program.settings import settings_manager
+from program.utils.request import SmartSession
+
+PACK = "a" * 40
+SINGLE = "b" * 40
+UNCACHED = "c" * 40
+MISNAMED = "d" * 40
+
+
+def stream(infohash, filename):
+    return {
+        "name": "[TB ⚡] \nDebridio 1080p",
+        "title": f"{filename}\n⚡ 📦 📺 1080p 💾 1.5 GB  ",
+        "url": f"https://addon.debridio.com/play/movie/torbox/KEY1/KEY2/{infohash}/{filename}",
+        "behaviorHints": {"filename": filename},
+    }
+
+
+def files(*names):
+    return [{"name": n, "size": 1} for n in names]
+
+
+class FakeAPI:
+    def __init__(self):
+        self.streams = [
+            stream(PACK, "Movie.2000.1080p.BluRay.mkv"),
+            stream(SINGLE, "Movie.2000.2160p.WEB-DL.mkv"),
+            stream(UNCACHED, "Movie.2000.720p.mkv"),
+        ]
+        self.cached = {
+            PACK: {
+                "name": "Movie Collection 1080p BluRay",
+                "files": files("a.mkv", "b.mkv"),
+            },
+            SINGLE: {
+                "name": "Movie.2000.2160p.WEB-DL",
+                "files": files("Movie.2000.2160p.mkv"),
+            },
+        }
+        self.torbox_status = 200
+        self.calls = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.calls.append(request)
+        host, path = request.url.host, request.url.path
+
+        if host == "addon.debridio.com" and path.endswith("/manifest.json"):
+            return httpx.Response(200, json={"name": "Debridio - Scraper TB"})
+        if host == "addon.debridio.com" and "/stream/" in path:
+            return httpx.Response(200, json={"streams": self.streams})
+        if host == "api.torbox.app" and path.endswith("/torrents/checkcached"):
+            if self.torbox_status != 200:
+                return httpx.Response(
+                    self.torbox_status, headers={"Retry-After": "300"}
+                )
+            hashes = request.url.params["hash"].split(",")
+            data = {h: self.cached[h] for h in hashes if h in self.cached}
+            return httpx.Response(200, json={"success": True, "data": data})
+
+        return httpx.Response(404)
+
+
+@pytest.fixture
+def api(monkeypatch):
+    api = FakeAPI()
+
+    # Riven registers these levels at startup; the tests run without it.
+    for level in ("SCRAPER", "NOT_FOUND"):
+        try:
+            debridio.logger.level(level)
+        except ValueError:
+            debridio.logger.level(level, no=20)
+
+    class FakeSession(SmartSession):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._client = httpx.Client(transport=httpx.MockTransport(api.handler))
+
+    monkeypatch.setattr(debridio, "SmartSession", FakeSession)
+
+    settings = settings_manager.settings.scraping.debridio
+    monkeypatch.setattr(settings, "enabled", True)
+    monkeypatch.setattr(settings, "api_key", "debridio-key")
+    monkeypatch.setattr(
+        settings_manager.settings.downloaders.torbox, "api_key", "torbox-key"
+    )
+
+    return api
+
+
+@pytest.fixture
+def scraper(api):  # noqa: ARG001 - installs the fake API first
+    scraper = Debridio()
+    assert scraper.initialized
+    return scraper
+
+
+def movie():
+    return Movie({"imdb_id": "tt0111161", "title": "Movie", "type": "movie"})
+
+
+def test_hash_comes_from_url_path():
+    url = (
+        f"https://addon.debridio.com/play/series/torbox/K1/K2/{PACK.upper()}/S03E02.mkv"
+    )
+    assert hash_from_url(url) == PACK
+    assert hash_from_url("https://addon.debridio.com/play/no-hash/here.mkv") is None
+
+
+def test_config_segment_matches_debridio_format(scraper):
+    config = json.loads(base64.b64decode(scraper._config_segment()))
+    assert config["api_key"] == "debridio-key"
+    assert config["provider"] == "torbox"
+    assert config["providerKey"] == "torbox-key"
+
+
+def test_titles_come_from_torbox_and_uncached_are_dropped(scraper):
+    results = scraper.scrape(movie())
+
+    assert results == {
+        PACK: "Movie Collection 1080p BluRay",
+        SINGLE: "Movie.2000.2160p.WEB-DL",
+    }
+
+
+def test_falls_back_to_debridio_titles_when_torbox_is_throttled(scraper, api):
+    api.torbox_status = 429
+
+    results = scraper.scrape(movie())
+
+    assert results[UNCACHED] == "Movie.2000.720p.mkv"
+    assert len(results) == 3
+    # One TorBox call only: no inline sleep/retry on the 429.
+    assert sum(1 for r in api.calls if r.url.host == "api.torbox.app") == 1
+
+
+def test_large_answers_are_capped_and_batched(scraper, api, monkeypatch):
+    monkeypatch.setattr(debridio, "MAX_HASHES", 250)
+    api.streams = [stream(f"{i:040x}", f"Movie.{i}.mkv") for i in range(400)]
+
+    scraper.scrape(movie())
+
+    torbox_calls = [r for r in api.calls if r.url.host == "api.torbox.app"]
+    assert len(torbox_calls) == 3
+    assert sum(len(r.url.params["hash"].split(",")) for r in torbox_calls) == 250
+
+
+def test_keys_never_reach_the_log(scraper, api, monkeypatch):
+    logged = []
+    monkeypatch.setattr(
+        debridio.logger, "error", lambda msg, *_a, **_k: logged.append(msg)
+    )
+
+    def boom(request):
+        raise httpx.ConnectError(f"failed {request.url}")
+
+    api.handler = boom
+    scraper.session._client = httpx.Client(transport=httpx.MockTransport(boom))
+
+    assert scraper.run(movie()) == {}
+    assert logged and not any("debridio-key" in m or "torbox-key" in m for m in logged)
+    assert not any(scraper._config_segment() in m for m in logged)
+
+
+def test_single_episode_name_on_a_series_pack_gets_the_season_range():
+    name = "Gilmore.Girls.S05E01.Say.Goodbye.to.Daisy.Miller.1080p.WEB-DL.x265-MONOLITH.mkv"
+    pack = files(
+        *(
+            f"Season {s}/Gilmore.Girls.S0{s}E{e:02d}.1080p.mkv"
+            for s in range(1, 8)
+            for e in range(1, 4)
+        )
+    )
+
+    title = torrent_title(name, pack)
+
+    assert (
+        title
+        == "Gilmore.Girls.S01-S07.Say.Goodbye.to.Daisy.Miller.1080p.WEB-DL.x265-MONOLITH"
+    )
+
+
+def test_correct_names_are_left_alone():
+    season_pack = "Gilmore Girls S03 1080p WEB-DL DD+ 2.0 x264-TrollHD"
+    assert torrent_title(season_pack, files("S03E01.mkv", "S03E02.mkv")) == season_pack
+
+    single = "Show.S01E02.1080p.WEB-DL.mkv"
+    assert (
+        torrent_title(single, files("Show.S01E02.1080p.WEB-DL.mkv", "sample.txt"))
+        == single
+    )
