@@ -51,6 +51,7 @@
 > - **Keys kept out of logs.** Account keys in logged URLs and errors are replaced with `REDACTED`.
 > - **Manual scrape works for shows.** `GET /api/v1/scrape?item_id=<show>` no longer fails with `DetachedInstanceError`.
 > - **Re-sourced files don't go missing in Plex.** When a link dies, the file stays in place and is swapped to the new source, and reads wait for the swap.
+> - **Airing seasons get their released episodes.** After a season with unreleased episodes is scraped, its released episodes are scraped right away instead of waiting for the daily retry.
 >
 > For full details of each change, see the [commits on the `torbox` branch](https://github.com/coledeb/riven/commits/torbox).
 

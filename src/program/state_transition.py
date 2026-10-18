@@ -4,7 +4,7 @@ from loguru import logger
 
 from program.media import MediaItem, States
 from program.types import ProcessedEvent, Service
-from program.media.item import Season, Show
+from program.media.item import Episode, Season, Show
 
 
 def process_event(
@@ -88,7 +88,14 @@ def process_event(
     elif existing_item and existing_item.last_state in [States.Indexed, States.Unknown]:
         next_service = services.scraping
 
-        if emitted_by != services.scraping and (
+        # A scraper event only blocks re-scraping the item it just scraped.
+        # Episodes of a just-scraped Ongoing season were never scraped
+        # themselves, so they still go to the scraper.
+        never_scraped_episode = (
+            isinstance(existing_item, Episode) and existing_item.scraped_at is None
+        )
+
+        if (emitted_by != services.scraping or never_scraped_episode) and (
             overrides is not None
             or services.scraping.should_submit(existing_item)
         ):
