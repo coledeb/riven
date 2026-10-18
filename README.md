@@ -22,7 +22,7 @@
 > [!NOTE]
 > **About this fork (TorBox support)**
 >
-> This fork (`coledeb/riven`, branch [`torbox`](https://github.com/coledeb/riven/tree/torbox)) adds [TorBox](https://torbox.app) as a downloader for current Riven. Upstream Riven no longer supports TorBox. The downloader is based on the earlier [TorBox-App/riven](https://github.com/TorBox-App/riven) fork and updated for the current downloader interface and RivenVFS.
+> This fork adds [TorBox](https://torbox.app) as a downloader for current Riven. Upstream Riven no longer supports TorBox. The downloader is based on the earlier [TorBox-App/riven](https://github.com/TorBox-App/riven) fork and updated for the current downloader interface and RivenVFS.
 >
 > It was written with TorBox's rate limits in mind, aiming to be a respectful API client that stays well inside them rather than leaning on retries:
 >
@@ -53,7 +53,7 @@
 > - **Re-sourced files don't go missing in Plex.** When a link dies, the file stays in place and is swapped to the new source, and reads wait for the swap.
 > - **Airing seasons get their released episodes.** After a season with unreleased episodes is scraped, its released episodes are scraped right away instead of waiting for the daily retry.
 >
-> For full details of each change, see the [commits on the `torbox` branch](https://github.com/coledeb/riven/commits/torbox).
+> For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
 Services currently supported:
 
@@ -66,7 +66,10 @@ Services currently supported:
 
 ## Documentation
 
-For installation, Plex setup, RivenVFS and caching, library profiles, naming templates and contributing, see the [upstream Riven README](https://github.com/rivenmedia/riven#readme). Everything there applies to this fork too; the fork only adds the TorBox downloader and the changes listed above.
+This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.
+With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.
+Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. The information there *likely* applies to this fork too; the fork only adds the TorBox downloader and the changes listed above.
+I will possibly consider issues or pull requests, but I offer no guarantee of this.
 
 ## License
 
