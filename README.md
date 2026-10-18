@@ -62,7 +62,7 @@ Services currently supported:
 | Type              | Supported                                                                         |
 | ----------------- | --------------------------------------------------------------------------------- |
 | Debrid services   | Real Debrid, All Debrid, Debrid-Link, TorBox                                      |
-| Content services  | Plex Watchlist, Overseerr, Mdblist, Listrr, Trakt                                 |
+| Content services  | Plex Watchlist, Seerr, Mdblist, Listrr, Trakt                                 |
 | Scraping services | AIOStreams, Comet, Debridio, Jackett, Torrentio, Orionoid, Mediafusion, Prowlarr, Zilean, Rarbg |
 | Media servers     | Plex, Jellyfin, Emby                                                              |
 
@@ -71,6 +71,8 @@ Services currently supported:
 This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.
 
 With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.
+
+I will not remove other already supported services by upstream Riven, and I will be keeping this branch updated alongside upstream. However, I have *not* verified the state or useability of any services outside of my stack or use case.
 
 Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. It *likely* applies to this fork too.
 
