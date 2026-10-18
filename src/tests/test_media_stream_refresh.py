@@ -37,7 +37,7 @@ def make_stream(refreshed_url):
         stream.target_url.value = refreshed_url
         return True
 
-    async def no_wait(attempt, max_attempts, backoffs):
+    async def no_wait(attempt, max_attempts, _backoffs):
         return attempt < max_attempts - 1
 
     stream._refresh_download_url = refresh
