@@ -96,6 +96,7 @@ MOUNT_WAIT_SECONDS = 10
 if TYPE_CHECKING:
     from program.media.item import MediaItem
     from program.media.filesystem_entry import FilesystemEntry
+    from program.media.media_entry import MediaEntry
 
 
 class FileHandle(TypedDict):
@@ -197,6 +198,17 @@ class RivenVFS(pyfuse3.Operations):
 
         # Profile hash for detecting changes (optimization: skip re-matching if unchanged)
         self._last_profile_hash: int | None = None
+
+        # Files kept visible while their item is re-sourced after a dead link
+        # (item id -> (paths, original_filename)), so media servers scanning
+        # mid-swap don't see them vanish. See hold().
+        self._held: dict[int, tuple[list[str], str]] = {}
+
+        # Item ids whose file was swapped in place; the updater rescans them later
+        self._replaced_ids = set[int]()
+
+        # Seconds a held file may wait for its new source before it's removed
+        self._hold_timeout = 600
 
         # Set of paths currently being streamed
         self._active_streams = dict[str, MediaStream]()
@@ -563,8 +575,22 @@ class RivenVFS(pyfuse3.Operations):
             logger.debug(f"Item {item.id} has no media entry, skipping VFS add")
             return False
 
+        with self._tree_lock:
+            held = self._held.pop(item.id, None)
+
+        if held:
+            self._swap_held_nodes(entry, held[0])
+
         # Register the MediaEntry (video file)
         video_paths = self._register_filesystem_entry(entry)
+
+        if held:
+            # Drop held paths the new file doesn't reuse (e.g. other extension)
+            for path in held[0]:
+                if path not in video_paths:
+                    self._unregister_clean_path(path)
+
+            self._replaced_ids.add(item.id)
 
         if not video_paths:
             return False
@@ -604,6 +630,13 @@ class RivenVFS(pyfuse3.Operations):
             for episode in item.episodes:
                 self.remove(episode)
 
+        with self._tree_lock:
+            held = self._held.pop(item.id, None)
+
+        if held:
+            for path in held[0]:
+                self._unregister_clean_path(path)
+
         # Only process if this item has a filesystem entry
         if not item.filesystem_entry:
             logger.debug(f"Item {item.id} has no filesystem_entry, skipping VFS remove")
@@ -636,6 +669,137 @@ class RivenVFS(pyfuse3.Operations):
             return True
 
         return False
+
+    def hold(self, item: MediaItem) -> None:
+        """
+        Keep an item's video file visible while the item is re-sourced.
+
+        Used instead of remove() when a dead link resets an item. Without it the
+        file disappears for a few seconds, and a media server scanning then
+        (or reading through an SMB client's cache) marks it unavailable. The
+        node keeps its path and is updated in place by add() once the new
+        source is downloaded; opens and reads in the meantime wait for it.
+        Subtitles are removed as usual. If no new source arrives within
+        _hold_timeout, the node is removed (a later source is added as usual).
+        """
+
+        from program.media.item import Season, Show
+
+        if isinstance(item, Show):
+            for season in item.seasons:
+                self.hold(season)
+
+        if isinstance(item, Season):
+            for episode in item.episodes:
+                self.hold(episode)
+
+        if not (entry := item.media_entry):
+            return
+
+        paths = [
+            node.path
+            for node in self._get_nodes_by_original_filename(entry.original_filename)
+        ]
+
+        if not paths:
+            self.remove(item)
+            return
+
+        self._held[item.id] = (paths, entry.original_filename)
+        entry.available_in_vfs = False
+
+        timer = threading.Timer(
+            self._hold_timeout,
+            self._expire_hold,
+            args=(item.id, entry.original_filename),
+        )
+        timer.daemon = True
+        timer.start()
+
+        for subtitle in item.subtitles:
+            self._unregister_filesystem_entry(subtitle, video_paths=paths)
+            subtitle.available_in_vfs = False
+
+        logger.debug(f"Holding VFS nodes for item {item.id} while re-sourcing: {paths}")
+
+    def _expire_hold(self, item_id: int, original_filename: str) -> None:
+        """Remove a held file whose item found no new source in time."""
+
+        with self._tree_lock:
+            held = self._held.get(item_id)
+
+            if not held or held[1] != original_filename:
+                return
+
+            del self._held[item_id]
+
+        for path in held[0]:
+            self._unregister_clean_path(path)
+
+        logger.warning(
+            f"No new source for item {item_id} within {self._hold_timeout}s; "
+            f"removed {len(held[0])} held file(s) from the VFS"
+        )
+
+    def pop_replaced(self, item_id: int) -> bool:
+        """Return True once if the item's file was swapped in place by add()."""
+
+        if item_id in self._replaced_ids:
+            self._replaced_ids.discard(item_id)
+            return True
+
+        return False
+
+    def _is_held(self, original_filename: str) -> bool:
+        return any(name == original_filename for _, name in self._held.values())
+
+    def _swap_held_nodes(self, entry: MediaEntry, held_paths: list[str]) -> None:
+        """Point held nodes that the new entry reuses at the new file."""
+
+        new_paths = {self._normalize_path(p) for p in entry.get_all_vfs_paths()}
+        swapped = list[pyfuse3.InodeT]()
+
+        with self._tree_lock:
+            for path in held_paths:
+                node = self._get_node_by_path(path)
+
+                if not isinstance(node, VFSFile) or path not in new_paths:
+                    continue
+
+                node.original_filename = entry.original_filename
+                node.file_size = entry.file_size
+                node.created_at = entry.created_at.isoformat()
+                node.updated_at = entry.updated_at.isoformat()
+                swapped.append(node.inode)
+
+        # Drop cached attributes and pages so readers see the new size and data
+        self._invalidate_inode_list(swapped, attr_only=False, operation="swap")
+
+        if swapped:
+            logger.debug(
+                f"Swapped {len(swapped)} held VFS node(s) to {entry.original_filename}"
+            )
+
+    async def _await_swap(self, inode: pyfuse3.InodeT, old_filename: str) -> None:
+        """Wait up to 30 s for a held node to be swapped to a new file."""
+
+        try:
+            with trio.fail_after(30):
+                while True:
+                    with self._tree_lock:
+                        node = self._inode_to_node.get(inode)
+
+                    if not isinstance(node, VFSFile):
+                        raise pyfuse3.FUSEError(errno.ENOENT)
+
+                    if node.original_filename != old_filename:
+                        return
+
+                    await trio.sleep(1)
+        except trio.TooSlowError:
+            logger.error(f"Timeout waiting for a new source for inode={inode}")
+
+            raise pyfuse3.FUSEError(errno.EIO) from None
 
     def close(self) -> None:
         """Clean up and unmount the filesystem."""
@@ -1720,58 +1884,34 @@ class RivenVFS(pyfuse3.Operations):
 
             # Only validate the CDN URL for media entries; subtitles are read directly from the database
             if entry_type == "media":
+                original_filename = node.original_filename
+
+                if self._is_held(original_filename):
+                    # Being re-sourced after a dead link; wait for the new file
+                    await self._await_swap(inode, original_filename)
+
+                    return await self.open(inode, flags, ctx)
+
+                dead = False
+
                 try:
                     logger.trace(f"Validating CDN URL for {node.path}...")
 
-                    DebridCDNUrl.from_filename(node.original_filename).validate()
+                    DebridCDNUrl.from_filename(original_filename).validate()
                 except DebridServiceLinkUnavailable:
+                    dead = True
+
+                # A dead link resets the item with its node held (see hold()),
+                # either via the exception or inside validate()'s refresh, and
+                # add() swaps the node in place once a new source is found.
+                if dead or self._is_held(original_filename):
                     logger.warning(
-                        f"Dead link for {node.path}; attempting to download a working one..."
+                        f"Dead link for {node.path}; waiting for a working one..."
                     )
 
-                    try:
-                        original_inode = node.inode
-
-                        with trio.fail_after(30):
-                            while True:
-                                new_nodes = [
-                                    candidate
-                                    for candidate in self._get_nodes_by_original_filename(
-                                        node.original_filename
-                                    )
-                                    if (
-                                        candidate.inode != original_inode
-                                        and (
-                                            candidate.original_filename
-                                            != node.original_filename
-                                        )
-                                    )
-                                ]
-
-                                if new_nodes:
-                                    logger.trace(
-                                        f"Found new file for {node.original_filename}"
-                                    )
-
-                                    break
-
-                                await trio.sleep(1)
-                    except trio.TooSlowError:
-                        logger.error(
-                            f"Timeout waiting for new link to become available for path={node.path}"
-                        )
-
-                        raise pyfuse3.FUSEError(errno.ENOENT) from None
-
-                    logger.trace(f"Found new nodes after redownload: {new_nodes}")
-
-                    inode = new_nodes[0].inode
+                    await self._await_swap(inode, original_filename)
 
                     return await self.open(inode, flags, ctx)
-                except Exception as e:
-                    logger.exception(f"Unexpected error whilst validating CDN URL: {e}")
-
-                    raise pyfuse3.FUSEError(errno.EIO)
 
             logger.trace(f"open: path={path} inode={inode} fh_pending flags={flags}")
 
@@ -1813,6 +1953,10 @@ class RivenVFS(pyfuse3.Operations):
         Returns:
             Bytes read from file (may be less than size at EOF)
         """
+
+        original_filename: str | None = None
+        entry_type = None
+        inode = None
 
         try:
             # Log cache stats asynchronously (don't block on trim/I/O)
@@ -1896,6 +2040,12 @@ class RivenVFS(pyfuse3.Operations):
             if not original_filename:
                 logger.error(f"No original_filename for {path}")
                 raise pyfuse3.FUSEError(errno.ENOENT)
+
+            if self._is_held(original_filename):
+                # Being re-sourced; continue on the new file once it's swapped in
+                return await self._read_after_swap(
+                    fh, inode, path, original_filename, off, size
+                )
 
             # Calculate request range
             request_range = (off, min(off + size - 1, file_size - 1))
@@ -1994,12 +2144,46 @@ class RivenVFS(pyfuse3.Operations):
                         logger.error(f"{exc.__class__.__name__}: {exc}")
 
                 raise pyfuse3.FUSEError(errno.EIO)
-        except pyfuse3.FUSEError as e:
+        except pyfuse3.FUSEError:
+            # A failed read can itself trigger a re-source (dead link); if so,
+            # wait for the new file instead of failing the reader.
+            if (
+                entry_type == "media"
+                and original_filename
+                and self._is_held(original_filename)
+            ):
+                return await self._read_after_swap(
+                    fh, inode, path, original_filename, off, size
+                )
+
             raise
         except Exception:
             logger.exception(f"read error fh={fh} off={off} size={size}")
 
             raise pyfuse3.FUSEError(errno.EIO)
+
+    async def _read_after_swap(
+        self,
+        fh: pyfuse3.FileHandleT,
+        inode: pyfuse3.InodeT,
+        path: str,
+        original_filename: str,
+        off: int,
+        size: int,
+    ) -> bytes:
+        """Wait for a held file to be swapped, drop the old stream, read again."""
+
+        logger.warning(f"Waiting for a new source for {path} [fh: {fh}]")
+
+        await self._await_swap(inode, original_filename)
+
+        async with self._active_streams_lock:
+            stream = self._active_streams.pop(self._stream_key(path, fh), None)
+
+        if stream:
+            await stream.close()
+
+        return await self.read(fh, off, size)
 
     async def release(self, fh: pyfuse3.FileHandleT) -> None:
         """Release/close a file handle."""

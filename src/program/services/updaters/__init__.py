@@ -1,6 +1,7 @@
 """Updater module"""
 
 import os
+import threading
 
 from loguru import logger
 
@@ -11,6 +12,12 @@ from program.services.updaters.plex import PlexUpdater
 from program.settings import settings_manager
 from program.core.runner import MediaItemGenerator, Runner, RunnerResult
 from program.services.updaters.base import BaseUpdater
+
+
+# A file swapped in place keeps its path, so the media server only notices the
+# new file if it sees the new size/date. SMB clients (Windows: 10 s by default)
+# cache file info, so a scan right after the swap can still see the old file.
+REPLACED_RESCAN_DELAY = 15
 
 
 class Updater(Runner[None, BaseUpdater]):
@@ -63,6 +70,7 @@ class Updater(Runner[None, BaseUpdater]):
         logger.debug(f"Starting update process for {item.log_string}")
         items = self.get_items_to_update(item)
         refreshed_paths = set[str]()  # Track refreshed paths to avoid duplicates
+        rescan_paths = set[str]()  # Paths of files swapped in place
 
         for _item in items:
             # Get all VFS paths from the entry's helper method
@@ -96,6 +104,14 @@ class Updater(Runner[None, BaseUpdater]):
                     if self.refresh_path(refresh_path):
                         refreshed_paths.add(refresh_path)
 
+            if self._was_replaced(_item):
+                rescan_paths.update(
+                    os.path.dirname(
+                        os.path.join(self.library_path, vfs_path.lstrip("/"))
+                    )
+                    for vfs_path in all_vfs_paths
+                )
+
             _item.updated = True
             # Persist the state: updated=True makes _determine_state() return
             # Completed.  The framework only calls store_state() on the
@@ -108,7 +124,34 @@ class Updater(Runner[None, BaseUpdater]):
             f"Updated {item.log_string} ({len(refreshed_paths)} unique paths refreshed)"
         )
 
+        if rescan_paths:
+            logger.debug(
+                f"Rescanning {len(rescan_paths)} path(s) in {REPLACED_RESCAN_DELAY}s "
+                f"for re-sourced {item.log_string}"
+            )
+            timer = threading.Timer(
+                REPLACED_RESCAN_DELAY, self._rescan, args=(sorted(rescan_paths),)
+            )
+            timer.daemon = True
+            timer.start()
+
         yield RunnerResult(media_items=[item])
+
+    def _was_replaced(self, item: MediaItem) -> bool:
+        """True once if the VFS swapped this item's file in place."""
+
+        from program.program import riven
+
+        filesystem = riven.services and riven.services.filesystem
+        vfs = filesystem and filesystem.riven_vfs
+
+        return bool(vfs and item.id is not None and vfs.pop_replaced(item.id))
+
+    def _rescan(self, paths: list[str]) -> None:
+        for path in paths:
+            self.refresh_path(path)
+
+        logger.debug(f"Rescanned {len(paths)} path(s) after in-place file swap")
 
     def refresh_path(self, path: str) -> bool:
         """

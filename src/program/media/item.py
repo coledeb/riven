@@ -659,27 +659,30 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     def __hash__(self):
         return hash(self.id)
 
-    def reset(self):
+    def reset(self, keep_vfs: bool = False):
         """
         Reset this item's internal state and recursively reset child items when applicable.
 
         For a show, resets all seasons and their episodes; for a season, resets its episodes. After child resets, resets this item and updates its stored state.
+
+        keep_vfs: keep the video file visible in the VFS until a new source
+        replaces it (used when re-sourcing after a dead link).
         """
 
         if isinstance(self, Show):
             for season in self.seasons:
                 for episode in season.episodes:
-                    episode._reset()
+                    episode._reset(keep_vfs)
 
-                season._reset()
+                season._reset(keep_vfs)
         elif isinstance(self, Season):
             for episode in self.episodes:
-                episode._reset()
+                episode._reset(keep_vfs)
 
-        self._reset()
+        self._reset(keep_vfs)
         self.store_state()
 
-    def _reset(self):
+    def _reset(self, keep_vfs: bool = False):
         """
         Reset the media item and its related associations to prepare for rescraping.
 
@@ -702,7 +705,10 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         filesystem_service = riven.services.filesystem
 
         if filesystem_service.riven_vfs:
-            filesystem_service.riven_vfs.remove(self)
+            if keep_vfs:
+                filesystem_service.riven_vfs.hold(self)
+            else:
+                filesystem_service.riven_vfs.remove(self)
 
         # Clear filesystem entries - ORM automatically deletes orphaned entries
         self.filesystem_entries.clear()
