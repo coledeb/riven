@@ -289,11 +289,13 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     def blacklist_stream(self, stream: Stream) -> bool:
         """Blacklist a stream by moving it from streams to blacklisted_streams."""
 
+        # An episode's active stream is often its season's or show's pack, which
+        # isn't in the episode's own streams; blacklist it on the episode anyway.
         if stream in self.streams:
             self.streams.remove(stream)
 
-            if stream not in self.blacklisted_streams:
-                self.blacklisted_streams.append(stream)
+        if stream not in self.blacklisted_streams:
+            self.blacklisted_streams.append(stream)
 
             logger.debug(f"Blacklisted stream {stream.infohash} for {self.log_string}")
 

@@ -481,6 +481,17 @@ class Downloader(Runner[None, DownloaderBase]):
 
                     continue
 
+                # A season pack can still hold an episode whose file failed before
+                if any(
+                    s.infohash == download_result.infohash
+                    for s in episode.blacklisted_streams
+                ):
+                    logger.debug(
+                        f"Episode {episode.log_string} has {download_result.infohash} blacklisted; skipping"
+                    )
+
+                    continue
+
                 if episode.state not in [
                     States.Completed,
                     States.Symlinked,

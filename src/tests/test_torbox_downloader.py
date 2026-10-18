@@ -1,4 +1,5 @@
 import json
+import socket
 from urllib.parse import parse_qs
 
 import httpx
@@ -177,6 +178,19 @@ def fake(monkeypatch):
     monkeypatch.setattr(tb_settings, "api_key", "secret-key")
 
     return fake
+
+
+@pytest.fixture(autouse=True)
+def fake_dns(monkeypatch):
+    """CDN host lookups without the network: dead.cdn is a pulled server, nodns.cdn fails."""
+
+    def getaddrinfo(host, *_args, **_kwargs):
+        if host == "nodns.cdn":
+            raise socket.gaierror("lookup failed")
+        ip = "0.0.0.0" if host == "dead.cdn" else "203.0.113.7"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    monkeypatch.setattr(torbox.socket, "getaddrinfo", getaddrinfo)
 
 
 @pytest.fixture
@@ -360,3 +374,20 @@ def test_unrestrict_link_rate_limit(downloader, fake):
 
     assert downloader.unrestrict_link(downloader._file_link(existing_id, 0)) is None
     assert fake.count("torrents/requestdl") == calls
+
+
+@pytest.mark.parametrize(
+    ("host", "dead"), [("dead.cdn", True), ("nodns.cdn", False), ("live.cdn", False)]
+)
+def test_unrestrict_link_on_offline_cdn_server(downloader, fake, host, dead):
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    fake.requestdl_response = httpx.Response(
+        200, json={"success": True, "data": f"https://{host}/dld/x?token=t"}
+    )
+    link = downloader._file_link(existing_id, 0)
+
+    if dead:
+        with pytest.raises(DebridServiceLinkUnavailable):
+            downloader.unrestrict_link(link)
+    else:
+        assert downloader.unrestrict_link(link).download.startswith(f"https://{host}/")

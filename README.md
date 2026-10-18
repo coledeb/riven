@@ -32,6 +32,7 @@
 > - **Few link requests.** Links are resolved only when a file is actually opened, then reused.
 > - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
 > - **Shared accounts are safe.** Riven only deletes torrents it created itself, never ones that were already on the account.
+> - **Offline CDN servers.** TorBox sometimes hands out links on CDN servers it has taken offline (their names resolve to `0.0.0.0`). Such a link is reported as unavailable, so Riven picks another source for that file instead of failing every read.
 >
 > The TorBox limits and API behaviour this work relies on come from the [Debrid Media Manager notes on TorBox limits](https://notes.debridmediamanager.com/providers/torbox-limits/), written alongside [zurg](https://github.com/debridmediamanager/zurg-public). Many thanks to the DMM/zurg project for documenting them.
 >
@@ -43,6 +44,7 @@
 > - **Torrentio language flags kept.** Torrentio's flag line (`🇬🇧 / 🇷🇺`) is appended to titles as words, so language exclusions also catch dubs whose names don't say the language (e.g. Cyrillic-only names).
 > - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses, e.g. `{"/mnt/debrid/riven": "\\\\server\\riven"}`. Windows targets get backslashes and case-insensitive matching. Leave it empty when Plex sees the same paths as Riven.
 > - **Settings changes no longer break the mount.** Saving settings used to build a second RivenVFS and mount it over the running one, which logged "RivenVFS not mounted" or crashed the backend once the library had content. The running mount is now kept and given the new downloader; it's only remounted if `mount_path` changes or the mount has died. Startup also waits for the mount before checking it.
+> - **Blacklisting a pack for one episode sticks.** When an episode played from a season or show pack, blacklisting its stream did nothing, because the pack wasn't in the episode's own stream list. The episode then picked the same broken file again. Now the blacklist is recorded on the episode, and pack downloads skip episodes that have blacklisted that pack.
 > - **No library flicker on settings changes.** Every save used to clear the whole VFS tree and rebuild it, because the "library profiles unchanged" check crashed on list-valued filter rules (the default `example_kids` profile has them). While it rebuilt, folders were briefly missing, and a media server scanning then could drop items. The tree is now only rebuilt when a profile actually changes, and readers wait for the rebuild to finish instead of seeing a half-built tree.
 
 Services currently supported:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
+import socket
 import threading
 import time
 from datetime import datetime, timezone
@@ -125,6 +127,25 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _host_offline(url: str) -> bool:
+    """True if the URL's host resolves only to unspecified addresses (0.0.0.0 / ::)."""
+
+    host = urlparse(url).hostname
+
+    if not host:
+        return False
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        # A DNS hiccup isn't proof the server is gone
+        return False
+
+    return bool(infos) and all(
+        ipaddress.ip_address(info[4][0]).is_unspecified for info in infos
+    )
 
 
 def _error_text(response: SmartResponse, body: dict[str, Any]) -> str:
@@ -709,6 +730,14 @@ class TorBoxDownloader(DownloaderBase):
             and isinstance(url, str)
             and url.startswith("http")
         ):
+            # TorBox keeps handing out links on CDN servers it has pulled; their
+            # names resolve to 0.0.0.0, so the file can't be streamed from here.
+            if _host_offline(url):
+                logger.warning(
+                    f"TorBox torrent {torrent_id} file {file_id} is on an offline CDN server ({urlparse(url).hostname}); picking another source"
+                )
+                raise DebridServiceLinkUnavailable(provider=self.key, link=link)
+
             return UnrestrictedLink(download=url, filename="file", filesize=0)
 
         # TorBox answers a vanished torrent or file with a generic 500
