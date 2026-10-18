@@ -857,8 +857,14 @@ class MediaStream:
                         continue
 
                     raise DebridServiceForbiddenException(provider=self.provider) from e
-                elif status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE, HTTPStatus.SERVICE_UNAVAILABLE):
-                    # File can't be found at this URL; try refreshing the URL once
+                elif status_code in (
+                    HTTPStatus.BAD_REQUEST,
+                    HTTPStatus.NOT_FOUND,
+                    HTTPStatus.GONE,
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                ):
+                    # File can't be found at this URL; try refreshing the URL once.
+                    # TorBox's CDN answers an expired link with 400, not 403/410.
                     if attempt == 0:
                         has_fresh_url = await self._refresh_download_url()
 

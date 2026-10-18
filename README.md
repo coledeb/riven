@@ -33,6 +33,7 @@
 > - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
 > - **Shared accounts are safe.** Riven only deletes torrents it created itself, never ones that were already on the account.
 > - **Offline CDN servers.** TorBox sometimes hands out links on CDN servers it has taken offline (their names resolve to `0.0.0.0`). Such a link is reported as unavailable, so Riven picks another source for that file instead of failing every read.
+> - **Expired CDN links.** TorBox's CDN answers an expired link with `400 Bad Request` rather than 403/410. Riven now treats a 400 like a 404: it fetches a fresh link once and retries, instead of failing every read of a file that has been sitting for a while.
 >
 > The TorBox limits and API behaviour this work relies on come from the [Debrid Media Manager notes on TorBox limits](https://notes.debridmediamanager.com/providers/torbox-limits/), written alongside [zurg](https://github.com/debridmediamanager/zurg-public). Many thanks to the DMM/zurg project for documenting them.
 >
