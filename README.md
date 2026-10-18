@@ -66,10 +66,10 @@ Services currently supported:
 
 ## Information
 
->This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.
->With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.
->Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. The information there *likely* applies to this fork too; the fork only adds the TorBox downloader and the changes listed above.
->I will possibly consider issues or pull requests, but I offer no guarantee of this.
+- This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.
+- With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.
+- Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. The information there *likely* applies to this fork too; the fork only adds the TorBox downloader and the changes listed above.
+- I will possibly consider issues or pull requests, but I offer no guarantee of this.
 
 ## License
 
