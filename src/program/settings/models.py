@@ -110,10 +110,32 @@ class TorBoxModel(Observable):
     )
 
 
+# File extensions the downloaders can match; anything else is ignored.
+ALLOWED_VIDEO_EXTENSIONS = [
+    "mp4",
+    "mkv",
+    "avi",
+    "mov",
+    "wmv",
+    "flv",
+    "m4v",
+    "webm",
+    "mpg",
+    "mpeg",
+    "m2ts",
+    "ts",
+]
+DEFAULT_VIDEO_EXTENSIONS = ["mp4", "mkv", "avi", "m4v", "mov", "webm", "ts"]
+
+
 class DownloadersModel(Observable):
     video_extensions: list[str] = Field(
-        default_factory=lambda: list[str](["mp4", "mkv", "avi"]),
-        description="list of video file extensions to consider for downloads",
+        default_factory=lambda: list(DEFAULT_VIDEO_EXTENSIONS),
+        description="Video file extensions to consider for downloads (applied after a backend restart)",
+        json_schema_extra={
+            "uniqueItems": True,
+            "items": {"type": "string", "enum": ALLOWED_VIDEO_EXTENSIONS},
+        },
     )
     movie_filesize_mb_min: int = Field(
         default=700, ge=1, description="Minimum file size in MB for movies"
@@ -897,8 +919,9 @@ class ScraperModel(Observable):
     )
     anime_audio_order: list[Literal["dual", "japanese", "dubbed"]] = Field(
         default_factory=list,
+        max_length=3,
         description=(
-            "Anime only: preferred audio, best first, e.g. [\"dual\", \"japanese\", \"dubbed\"]. "
+            "Anime only: preferred audio, best first (e.g. dual, japanese, dubbed). "
             "dual = Japanese + English, japanese = Japanese audio (untagged releases count), "
             "dubbed = dubbed only. Unlisted types rank lowest. Empty = off. Applies within each resolution."
         ),
@@ -974,6 +997,10 @@ class NotificationsModel(Observable):
     on_item_type: list[str] = Field(
         default_factory=lambda: ["movie", "show", "season", "episode"],
         description="Item types to send notifications for",
+        json_schema_extra={
+            "uniqueItems": True,
+            "items": {"type": "string", "enum": ["movie", "show", "season", "episode"]},
+        },
     )
     service_urls: list[str] = Field(
         default_factory=list,

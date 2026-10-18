@@ -5,23 +5,9 @@ import regex
 from pydantic import BaseModel, Field
 
 from program.settings import settings_manager
+from program.settings.models import ALLOWED_VIDEO_EXTENSIONS, DEFAULT_VIDEO_EXTENSIONS
 from program.media.item import ProcessedItemType
 
-DEFAULT_VIDEO_EXTENSIONS = ["mp4", "mkv", "avi"]
-ALLOWED_VIDEO_EXTENSIONS = [
-    "mp4",
-    "mkv",
-    "avi",
-    "mov",
-    "wmv",
-    "flv",
-    "m4v",
-    "webm",
-    "mpg",
-    "mpeg",
-    "m2ts",
-    "ts",
-]
 
 ANIME_SPECIALS_PATTERN = regex.compile(
     r"\b(OVA|NCED|NCOP|NC|OVA|ED(\d?v?\d?)|OPv?(\d+)?|SP\d+)\b", regex.IGNORECASE
