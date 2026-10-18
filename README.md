@@ -41,16 +41,18 @@
 >
 > Changes in this fork that aren't strictly part of TorBox support:
 >
-> - **Debridio scraper (TorBox only).** Debridio's Stremio addon returns playback links whose file-name titles hide season packs. The scraper takes each hash from the link, then asks TorBox's free `checkcached` (up to 100 hashes per call, paced at 60/min) for the real torrent name and file list. Uncached results are dropped. If TorBox is throttled, it falls back to Debridio's titles without waiting. Debridio's language flags are appended as words (e.g. `[MULTI FRENCH]`) so Riven's language filters still apply. A rejected key or inactive subscription is logged as such.
-> - **Torrentio language flags kept.** Torrentio's flag line (`🇬🇧 / 🇷🇺`) is appended to titles as words, so language exclusions also catch dubs whose names don't say the language (e.g. Cyrillic-only names).
-> - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses, e.g. `{"/mnt/debrid/riven": "\\\\server\\riven"}`. Windows targets get backslashes and case-insensitive matching. Leave it empty when Plex sees the same paths as Riven.
-> - **Settings changes no longer break the mount.** Saving settings used to build a second RivenVFS and mount it over the running one, which logged "RivenVFS not mounted" or crashed the backend once the library had content. The running mount is now kept and given the new downloader; it's only remounted if `mount_path` changes or the mount has died. Startup also waits for the mount before checking it.
-> - **Blacklisting a pack for one episode sticks.** When an episode played from a season or show pack, blacklisting its stream did nothing, because the pack wasn't in the episode's own stream list. The episode then picked the same broken file again. Now the blacklist is recorded on the episode, and pack downloads skip episodes that have blacklisted that pack.
-> - **No library flicker on settings changes.** Every save used to clear the whole VFS tree and rebuild it, because the "library profiles unchanged" check crashed on list-valued filter rules (the default `example_kids` profile has them). While it rebuilt, folders were briefly missing, and a media server scanning then could drop items. The tree is now only rebuilt when a profile actually changes, and readers wait for the rebuild to finish instead of seeing a half-built tree.
-> - **Anime audio preference (optional).** `scraping.anime_audio_order` ranks anime by audio in the order you choose, best first, e.g. `["dual", "japanese", "dubbed"]` (`dual` = Japanese + English). Unlisted types rank lowest; an empty list (the default) turns it off. It applies within each resolution. Untagged releases and "ESub"/"English Subbed" count as Japanese audio, since anime release names rarely state their audio.
-> - **Keys kept out of logs.** Debrid CDN links can carry the account key in the URL (TorBox: `?token=<api key>`), and failed reads logged the full URL. Logged messages and errors now show `token=REDACTED` (also `apikey`, `key`, `password`), and log files no longer print local variables in tracebacks.
-> - **Manual scrape works for shows.** `GET /api/v1/scrape?item_id=<show>` failed for every season with `DetachedInstanceError`; parents are now linked first, as the streaming variant already did.
-> - **Re-sourced files don't go missing in Plex.** When a link died, the file vanished from the mount until a new source was downloaded. A media server scanning in that gap marked the item unavailable. Even after the scan, it kept the old file's details, because the new file has the same name, so playback could hang. The file now stays in place and is switched to the new source when it's ready. Opening or reading it in the meantime waits up to 30 s, so playback that hit the dead link carries on with the new source instead of failing. If no new source arrives within 10 minutes, the file is removed (and added back as usual if a source turns up later). Media servers are asked to rescan again 15 s later, after SMB clients' file-info cache has expired, so they pick up the new size and format.
+> - **Debridio scraper (TorBox only).** New scraper that gets real torrent names and file lists for Debridio results from TorBox's `checkcached`.
+> - **Torrentio language flags kept.** Torrentio's flag emojis are added to titles as words, so language filters catch more dubs.
+> - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses.
+> - **Settings changes no longer break the mount.** Saving settings keeps the running RivenVFS mount instead of mounting a second one over it.
+> - **Blacklisting a pack for one episode sticks.** An episode playing from a pack now records the pack's blacklist and won't pick it again.
+> - **No library flicker on settings changes.** The VFS tree is only rebuilt when a library profile actually changes.
+> - **Anime audio preference (optional).** `scraping.anime_audio_order` ranks anime by audio type (dual / japanese / dubbed) in your chosen order.
+> - **Keys kept out of logs.** Account keys in logged URLs and errors are replaced with `REDACTED`.
+> - **Manual scrape works for shows.** `GET /api/v1/scrape?item_id=<show>` no longer fails with `DetachedInstanceError`.
+> - **Re-sourced files don't go missing in Plex.** When a link dies, the file stays in place and is swapped to the new source, and reads wait for the swap.
+>
+> For full details of each change, see the [commits on the `torbox` branch](https://github.com/coledeb/riven/commits/torbox).
 
 Services currently supported:
 
