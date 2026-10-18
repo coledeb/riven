@@ -19,6 +19,22 @@
   <p>Plex torrent streaming through Debrid and 3rd party services like Overseerr, Mdblist, etc.</p>
 </div>
 
+> [!NOTE]
+> **About this fork (TorBox support)**
+>
+> This fork (`coledeb/riven`, branch [`torbox`](https://github.com/coledeb/riven/tree/torbox)) adds [TorBox](https://torbox.app) as a downloader for current Riven. Upstream Riven no longer supports TorBox. The downloader is based on the earlier [TorBox-App/riven](https://github.com/TorBox-App/riven) fork and updated for the current downloader interface and RivenVFS.
+>
+> It was written with TorBox's rate limits in mind, aiming to be a respectful API client that stays well inside them rather than leaning on retries:
+>
+> - **Cached-only adds.** Each hash is checked with `checkcached` first, then added with `add_only_if_cached`. Nothing is downloaded from peers, and the hourly add limit isn't spent on uncached torrents.
+> - **Paced requests.** General API calls are paced at 240/min, below the documented 300/min, leaving room for other tools sharing the key. Download-link requests (`requestdl`) have their own, much smaller budget and are paced at 15/min.
+> - **Back off on 429s.** When TorBox returns a 429, the affected requests are paused for its `Retry-After` period instead of being retried in a loop.
+> - **Few link requests.** Links are resolved only when a file is actually opened, then reused.
+> - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
+> - **Shared accounts are safe.** Riven only deletes torrents it created itself, never ones that were already on the account.
+>
+> The TorBox limits and API behaviour this work relies on come from the [Debrid Media Manager notes on TorBox limits](https://notes.debridmediamanager.com/providers/torbox-limits/), written alongside [zurg](https://github.com/debridmediamanager/zurg-public). Many thanks to the DMM/zurg project for documenting them.
+
 Services currently supported:
 
 | Type              | Supported                                                                         |
