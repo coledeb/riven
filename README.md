@@ -66,17 +66,17 @@ Services currently supported:
 
 ## Information
 
-- This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.
-- With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.
-- Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. It *likely* applies to this fork too.
+This fork was created for my personal use case, allowing the interoperability of [DUMB](https://dumbarr.com/), TorBox, Riven, Torrentio, Debridio, Seerr, Plex, and Debrid Media Manager across WSL2 and Windows.  
+With this in mind, I have not created specific documentation for installation, configuration, etc. beyond what is written in this README.  
+Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readme) for more information. It *likely* applies to this fork too.  
 
 > [!NOTE]
 > For DUMB stack users, you will need to change your config for both Riven's Frontend and Backend like so:
-> - **Riven Frontend:** In the config, set `branch_enabled` to `true` and `branch` to `main`. This fork is built with current Frontend releases in mind.
-> - **Riven Backend:** In the config, set `repo_owner` to `coledeb`, `repo_name` to `riven`, `branch_enabled` to `true`, and `branch` to `torbox`.
+> - **Riven Frontend:** Set `branch_enabled` to `true` and `branch` to `main`. This fork is built with current Frontend releases in mind.
+> - **Riven Backend:** Set `repo_owner` to `coledeb`, `repo_name` to `riven`, `branch_enabled` to `true`, and `branch` to `torbox`.
 > - I also recommend setting `auto_update`  to `true`, and `auto_update_mode` to at least `check_only`, as I am actively pushing updates as I work on the fork.
 
-- I will possibly consider issues or pull requests on this fork, but I offer no guarantee of this.
+I will possibly consider issues or pull requests on this fork, but I offer no guarantee of this.
 
 ## License
 
