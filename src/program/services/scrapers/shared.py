@@ -124,8 +124,10 @@ def parse_results(
                 aliases=aliases,
             )
 
-            if item.is_anime and scraping_settings.anime_audio_preference:
-                torrent = with_anime_audio_bonus(torrent)
+            if item.is_anime and scraping_settings.anime_audio_order:
+                torrent = with_anime_audio_bonus(
+                    torrent, scraping_settings.anime_audio_order
+                )
 
             if isinstance(item, Movie):
                 # If movie item, disregard torrents with seasons and episodes

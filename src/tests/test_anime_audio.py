@@ -1,15 +1,16 @@
-"""Anime audio preference: Dual > Japanese > dubbed, from real Demon Slayer release names."""
+"""Anime audio preference in a configurable order, using real Demon Slayer release names."""
 
 import pytest
 from RTN import RTN, DefaultRanking, parse
 from RTN.models import SettingsModel
 
 from program.services.scrapers.anime_audio import (
-    DUAL_BONUS,
-    JAPANESE_BONUS,
+    STEP,
     anime_audio_bonus,
+    audio_type,
     with_anime_audio_bonus,
 )
+from program.settings.models import ScraperModel
 
 rtn = RTN(SettingsModel(), DefaultRanking())
 
@@ -36,28 +37,56 @@ DUBBED = [
 ]
 
 
-def bonus(title):
-    return anime_audio_bonus(title, parse(title))
+@pytest.mark.parametrize(
+    "titles, kind", [(DUAL, "dual"), (JAPANESE, "japanese"), (DUBBED, "dubbed")]
+)
+def test_audio_type(titles, kind):
+    for title in titles:
+        assert audio_type(title, parse(title)) == kind, title
 
 
-@pytest.mark.parametrize("title", DUAL)
-def test_dual_audio(title):
-    assert bonus(title) == DUAL_BONUS
+def bonus(title, order):
+    return anime_audio_bonus(title, parse(title), order)
 
 
-@pytest.mark.parametrize("title", JAPANESE)
-def test_japanese_or_untagged(title):
-    assert bonus(title) == JAPANESE_BONUS
+def test_order_sets_the_ranking():
+    order = ["dual", "japanese", "dubbed"]
+    assert bonus(DUAL[0], order) > bonus(JAPANESE[0], order) > bonus(DUBBED[0], order)
+
+    order = ["dubbed", "dual", "japanese"]
+    assert bonus(DUBBED[0], order) > bonus(DUAL[0], order) > bonus(JAPANESE[0], order)
+
+    order = ["japanese", "dubbed", "dual"]
+    assert bonus(JAPANESE[0], order) > bonus(DUBBED[0], order) > bonus(DUAL[0], order)
 
 
-@pytest.mark.parametrize("title", DUBBED)
-def test_dubbed(title):
-    assert bonus(title) == 0
+def test_unlisted_types_rank_lowest():
+    order = ["japanese"]
+    assert bonus(JAPANESE[0], order) == STEP
+    assert bonus(DUAL[0], order) == 0
+    assert bonus(DUBBED[0], order) == 0
+
+
+def test_empty_order_is_off():
+    assert bonus(DUAL[0], []) == 0
 
 
 def test_bonus_is_added_to_the_rank():
+    order = ["dual", "japanese"]
     dual = rtn.rank(DUAL[0], "a" * 40)
     dubbed = rtn.rank(DUBBED[0], "b" * 40)
 
-    assert with_anime_audio_bonus(dual).rank == dual.rank + DUAL_BONUS
-    assert with_anime_audio_bonus(dubbed) is dubbed
+    assert with_anime_audio_bonus(dual, order).rank == dual.rank + 2 * STEP
+    assert with_anime_audio_bonus(dubbed, order) is dubbed
+
+
+def test_setting_validation():
+    assert ScraperModel().anime_audio_order == []
+    assert ScraperModel(anime_audio_order=["dubbed", "dual"]).anime_audio_order == [
+        "dubbed",
+        "dual",
+    ]
+    with pytest.raises(ValueError):
+        ScraperModel(anime_audio_order=["dual", "dual"])
+    with pytest.raises(ValueError):
+        ScraperModel(anime_audio_order=["english"])

@@ -821,10 +821,21 @@ class ScraperModel(Observable):
     dubbed_anime_only: bool = Field(
         default=False, description="Only scrape dubbed anime content"
     )
-    anime_audio_preference: bool = Field(
-        default=False,
-        description="Rank anime by audio: Dual (Japanese + English) first, then Japanese, then dubbed. Applies within each resolution.",
+    anime_audio_order: list[Literal["dual", "japanese", "dubbed"]] = Field(
+        default_factory=list,
+        description=(
+            "Anime only: preferred audio, best first, e.g. [\"dual\", \"japanese\", \"dubbed\"]. "
+            "dual = Japanese + English, japanese = Japanese audio (untagged releases count), "
+            "dubbed = dubbed only. Unlisted types rank lowest. Empty = off. Applies within each resolution."
+        ),
     )
+
+    @field_validator("anime_audio_order")
+    @classmethod
+    def _unique_anime_audio_order(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("anime_audio_order must not repeat an audio type")
+        return value
     torrentio: TorrentioConfig = Field(
         default_factory=lambda: TorrentioConfig(), description="Torrentio configuration"
     )
