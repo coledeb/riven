@@ -12,7 +12,10 @@
 # proxy or tunnel domain) with 403 "Cross-site POST form submissions are forbidden".
 # The patch rewrites Origin to http://localhost:3000 for /ui/riven_frontend/
 # requests, only when Origin matches the browsed host (real cross-site posts are
-# still rejected). Then it
+# still rejected).
+# Fourth: DUMB opens the embed at /ui/riven_frontend (no trailing slash). Logged in,
+# the home page links "./_app/...", which then resolves to /ui/_app/... (404,
+# unstyled page). The patch 308-redirects that exact URL to /ui/riven_frontend/. Then it
 # restarts "DUMB Frontend" through DUMB's API with a 2-minute token DUMB mints itself.
 #
 # Idempotent: does nothing if already patched. The patch lives in the container
@@ -30,7 +33,8 @@ F=/dumb/frontend/.output/server/chunks/nitro/nitro.mjs
 # Pairs of "old<TAB>new", one per line.
 PATCHES='SVELTEKIT_SPA_SERVICES = /* @__PURE__ */ new Set(["riven_frontend"])	SVELTEKIT_SPA_SERVICES = /* @__PURE__ */ new Set([])
 if (/^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {	if (false && /^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {
-const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")	{ const _h = event.node.req.headers; if (_h.origin && /^\/ui\/riven_frontend(?:[/?]|$)/.test(reqUrl)) { try { const _o = new URL(_h.origin).host; const _hs = [_h.host, _h["x-forwarded-host"]].filter(Boolean).map((x) => String(x).split(",")[0].trim()); if (_hs.includes(_o)) _h.origin = "http://localhost:3000"; } catch {} } } const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")'
+const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")	{ const _h = event.node.req.headers; if (_h.origin && /^\/ui\/riven_frontend(?:[/?]|$)/.test(reqUrl)) { try { const _o = new URL(_h.origin).host; const _hs = [_h.host, _h["x-forwarded-host"]].filter(Boolean).map((x) => String(x).split(",")[0].trim()); if (_hs.includes(_o)) _h.origin = "http://localhost:3000"; } catch {} } } const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")
+{ const _h = event.node.req.headers; if (_h.origin	{ const _m = /^\/ui\/riven_frontend(\?.*)?$/.exec(reqUrl); if (_m && ["GET", "HEAD"].includes(event.node.req.method)) return sendRedirect(event, "/ui/riven_frontend/" + (_m[1] || ""), 308); } { const _h = event.node.req.headers; if (_h.origin'
 log() { echo "$(date '+%F %T') patch-dumb-embed: $*"; }
 
 if [ "${1:-}" = "--wait" ]; then
@@ -46,18 +50,22 @@ docker exec -i -e PATCHES="$PATCHES" -e F="$F" "$C" /venv/bin/python - <<'PY'
 import os, shutil, sys
 f = os.environ["F"]
 pairs = [l.split("\t") for l in os.environ["PATCHES"].splitlines() if l]
-s = open(f).read()
-todo = [(o, n) for o, n in pairs if n not in s]
-if not todo:
-    sys.exit(3)  # already patched
-missing = [o for o, n in todo if s.count(o) != 1]
+s = orig = open(f).read()
+missing = []
+for o, n in pairs:  # in order: a later patch may anchor on an earlier one
+    if n in s:
+        continue
+    if s.count(o) != 1:
+        missing.append(o)
+        continue
+    s = s.replace(o, n)
 if missing:
     print("pattern not found:", *missing, sep="\n  ")
     sys.exit(2)
+if s == orig:
+    sys.exit(3)  # already patched
 if not os.path.exists(f + ".orig"):
     shutil.copy2(f, f + ".orig")
-for o, n in todo:
-    s = s.replace(o, n)
 open(f, "w").write(s)
 PY
 rc=$?

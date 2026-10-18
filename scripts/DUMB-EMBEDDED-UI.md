@@ -9,12 +9,13 @@ DUMB's UI proxy has two Riven Frontend special cases, written for the old fronte
 1. It injects `<base href="/ui/riven_frontend/">` into the page. The current frontend links its CSS and JS as `../_app/...`, which the base tag turns into `/ui/_app/...` (404).
 2. It sends `/ui/riven_frontend/api/*` to Riven Backend. The current frontend serves its own `/api` (login, passkeys), so those calls fail.
 3. Not a special case, but related: the frontend's `ORIGIN` is `http://localhost:3000`. If you open DUMB on any other address (LAN IP, reverse proxy, Cloudflare tunnel), SvelteKit rejects the login and register forms with 403 "Cross-site POST form submissions are forbidden", and the button appears to do nothing.
+4. Also not a special case: DUMB opens the embed at `/ui/riven_frontend`, without a trailing slash. Once you're logged in, the home page links its CSS and JS as `./_app/...`, which then also resolves to `/ui/_app/...` (404), so the page is unstyled again.
 
-Both are in `/dumb/frontend/.output/server/chunks/nitro/nitro.mjs` inside the DUMB container. Tested with DUMB 1.89.0 and Riven Frontend v1.0.0-beta.3.
+All of these are handled in `/dumb/frontend/.output/server/chunks/nitro/nitro.mjs` inside the DUMB container. Tested with DUMB 1.89.0 and Riven Frontend v1.0.0-beta.3.
 
 ## What the files here do
 
-- **`patch-dumb-embed.sh`** turns both special cases off and, for (3), has DUMB's proxy rewrite `Origin` to `http://localhost:3000` on Riven Frontend requests, but only when it matches the address you're browsing, so forms posted from other sites are still rejected. It keeps the original as `nitro.mjs.orig`. Then it restarts "DUMB Frontend" through DUMB's API, using a 2-minute token that DUMB's own code creates inside the container. No password is needed and the token is never printed.
+- **`patch-dumb-embed.sh`** turns both special cases off and, for (3), has DUMB's proxy rewrite `Origin` to `http://localhost:3000` on Riven Frontend requests, but only when it matches the address you're browsing, so forms posted from other sites are still rejected. For (4), it redirects exactly `/ui/riven_frontend` to `/ui/riven_frontend/`. It keeps the original as `nitro.mjs.orig`. Then it restarts "DUMB Frontend" through DUMB's API, using a 2-minute token that DUMB's own code creates inside the container. No password is needed and the token is never printed.
   - If the patch is already in place, it does nothing.
   - If DUMB has changed that code (for example after an update that fixes it), it logs a warning and changes nothing.
 - **`dumb-embed-watch.service`** is a systemd user service. The patch lives in the container's writable layer, so it is lost when the container is recreated (for example by a DUMB image update). The service runs the script once when it starts, then again every time the DUMB container starts. Each time, the script waits for DUMB's API before patching.
