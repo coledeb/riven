@@ -14,6 +14,7 @@ from typing import cast
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.stream import Stream
+from program.services.scrapers.anime_audio import with_anime_audio_bonus
 from program.settings import settings_manager
 from program.settings.models import RTNSettingsModel, ScraperModel
 
@@ -122,6 +123,9 @@ def parse_results(
                 ] if not manual else False,
                 aliases=aliases,
             )
+
+            if item.is_anime and scraping_settings.anime_audio_preference:
+                torrent = with_anime_audio_bonus(torrent)
 
             if isinstance(item, Movie):
                 # If movie item, disregard torrents with seasons and episodes

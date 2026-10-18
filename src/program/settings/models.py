@@ -821,6 +821,10 @@ class ScraperModel(Observable):
     dubbed_anime_only: bool = Field(
         default=False, description="Only scrape dubbed anime content"
     )
+    anime_audio_preference: bool = Field(
+        default=False,
+        description="Rank anime by audio: Dual (Japanese + English) first, then Japanese, then dubbed. Applies within each resolution.",
+    )
     torrentio: TorrentioConfig = Field(
         default_factory=lambda: TorrentioConfig(), description="Torrentio configuration"
     )
