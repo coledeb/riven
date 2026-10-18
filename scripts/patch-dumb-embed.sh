@@ -6,7 +6,13 @@
 # as "../_app/...", which the base tag turns into /ui/_app/... (404), so the page
 # is unstyled. DUMB also sends /ui/riven_frontend/api/* to Riven Backend, but the
 # current frontend serves its own /api (login, passkeys), so login fails.
-# Both were written for DUMB's pinned frontend v0.17. This turns both off, then
+# Both were written for DUMB's pinned frontend v0.17. This turns both off.
+# Third: the frontend's ORIGIN is http://localhost:3000, so SvelteKit rejects form
+# posts (register/login) made through DUMB on any other address (e.g. a reverse
+# proxy or tunnel domain) with 403 "Cross-site POST form submissions are forbidden".
+# The patch rewrites Origin to http://localhost:3000 for /ui/riven_frontend/
+# requests, only when Origin matches the browsed host (real cross-site posts are
+# still rejected). Then it
 # restarts "DUMB Frontend" through DUMB's API with a 2-minute token DUMB mints itself.
 #
 # Idempotent: does nothing if already patched. The patch lives in the container
@@ -23,7 +29,8 @@ C="${DUMB_CONTAINER:-DUMB}"
 F=/dumb/frontend/.output/server/chunks/nitro/nitro.mjs
 # Pairs of "old<TAB>new", one per line.
 PATCHES='SVELTEKIT_SPA_SERVICES = /* @__PURE__ */ new Set(["riven_frontend"])	SVELTEKIT_SPA_SERVICES = /* @__PURE__ */ new Set([])
-if (/^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {	if (false && /^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {'
+if (/^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {	if (false && /^\/ui\/riven_frontend\/api(?:[/?]|$)/.test(reqUrl)) {
+const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")	{ const _h = event.node.req.headers; if (_h.origin && /^\/ui\/riven_frontend(?:[/?]|$)/.test(reqUrl)) { try { const _o = new URL(_h.origin).host; const _hs = [_h.host, _h["x-forwarded-host"]].filter(Boolean).map((x) => String(x).split(",")[0].trim()); if (_hs.includes(_o)) _h.origin = "http://localhost:3000"; } catch {} } } const isProxyRequest = reqUrl.startsWith("/api") || reqUrl.startsWith("/ws")'
 log() { echo "$(date '+%F %T') patch-dumb-embed: $*"; }
 
 if [ "${1:-}" = "--wait" ]; then
