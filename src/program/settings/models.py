@@ -892,6 +892,9 @@ class AIOStreamsConfig(Observable):
     password: str = Field(default="", description="User password for AIOStreams authentication")
 
 
+ANIME_AUDIO_TYPES = ("dual", "japanese", "dubbed")
+
+
 class ScraperModel(Observable):
     after_2: float = Field(
         default=2, description="Hours to wait after 2 failed scrapes"
@@ -917,15 +920,41 @@ class ScraperModel(Observable):
     dubbed_anime_only: bool = Field(
         default=False, description="Only scrape dubbed anime content"
     )
+    anime_audio_order_enabled: bool = Field(
+        default=False,
+        description="Anime only: rank releases by the audio order below (within each resolution)",
+    )
     anime_audio_order: list[Literal["dual", "japanese", "dubbed"]] = Field(
-        default_factory=list,
+        default_factory=lambda: list(ANIME_AUDIO_TYPES),
+        min_length=3,
         max_length=3,
         description=(
-            "Anime only: preferred audio, best first (e.g. dual, japanese, dubbed). "
+            "Preferred anime audio, best first; reorder with the arrows. "
             "dual = Japanese + English, japanese = Japanese audio (untagged releases count), "
-            "dubbed = dubbed only. Unlisted types rank lowest. Empty = off. Applies within each resolution."
+            "dubbed = dubbed only."
         ),
+        json_schema_extra={
+            "items": {"type": "string", "readOnly": True},
+            "x-ui-options": {"addable": False, "removable": False},
+        },
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _complete_anime_audio_order(cls, data: Any) -> Any:
+        # Older settings used an empty list for "off" and allowed partial lists.
+        if not isinstance(data, dict) or "anime_audio_order" not in data:
+            return data
+        order = data["anime_audio_order"]
+        if not isinstance(order, list):
+            return data
+        data = dict(data)
+        data.setdefault("anime_audio_order_enabled", bool(order))
+        if len(set(order)) == len(order):
+            data["anime_audio_order"] = order + [
+                t for t in ANIME_AUDIO_TYPES if t not in order
+            ]
+        return data
 
     @field_validator("anime_audio_order")
     @classmethod
@@ -933,6 +962,7 @@ class ScraperModel(Observable):
         if len(set(value)) != len(value):
             raise ValueError("anime_audio_order must not repeat an audio type")
         return value
+
     torrentio: TorrentioConfig = Field(
         default_factory=lambda: TorrentioConfig(), description="Torrentio configuration"
     )
@@ -969,7 +999,24 @@ class ScraperModel(Observable):
 # Version Ranking Model (set application defaults here!)
 
 
-class RTNSettingsModel(SettingsModel, Observable): ...
+class RTNSettingsModel(SettingsModel, Observable):
+    @field_validator("languages")
+    @classmethod
+    def _check_language_codes(cls, value: Any) -> Any:
+        """Lower-case and de-duplicate language codes; reject codes PTT never detects."""
+        from PTT.parse import LANGUAGES_TRANSLATION_TABLE
+
+        unknown: set[str] = set()
+        for field in ("required", "allowed", "exclude", "preferred"):
+            codes = [c.strip().lower() for c in getattr(value, field, None) or []]
+            unknown.update(c for c in codes if c not in LANGUAGES_TRANSLATION_TABLE)
+            setattr(value, field, list(dict.fromkeys(codes)))
+        if unknown:
+            raise ValueError(
+                f"Unknown language code(s): {', '.join(sorted(unknown))}. "
+                f"Valid codes: {', '.join(sorted(LANGUAGES_TRANSLATION_TABLE))}"
+            )
+        return value
 
 
 # Application Settings

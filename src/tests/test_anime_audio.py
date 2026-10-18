@@ -81,11 +81,20 @@ def test_bonus_is_added_to_the_rank():
 
 
 def test_setting_validation():
-    assert ScraperModel().anime_audio_order == []
-    assert ScraperModel(anime_audio_order=["dubbed", "dual"]).anime_audio_order == [
-        "dubbed",
-        "dual",
-    ]
+    default = ScraperModel()
+    assert default.anime_audio_order == ["dual", "japanese", "dubbed"]
+    assert default.anime_audio_order_enabled is False
+    # Old settings: empty list meant off, partial lists get the rest appended.
+    assert ScraperModel(anime_audio_order=[]).anime_audio_order_enabled is False
+    partial = ScraperModel(anime_audio_order=["dubbed", "dual"])
+    assert partial.anime_audio_order == ["dubbed", "dual", "japanese"]
+    assert partial.anime_audio_order_enabled is True
+    assert (
+        ScraperModel(
+            anime_audio_order=["japanese"], anime_audio_order_enabled=False
+        ).anime_audio_order_enabled
+        is False
+    )
     with pytest.raises(ValueError):
         ScraperModel(anime_audio_order=["dual", "dual"])
     with pytest.raises(ValueError):

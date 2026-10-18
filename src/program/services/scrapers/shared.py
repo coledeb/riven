@@ -124,7 +124,7 @@ def parse_results(
                 aliases=aliases,
             )
 
-            if item.is_anime and scraping_settings.anime_audio_order:
+            if item.is_anime and scraping_settings.anime_audio_order_enabled:
                 torrent = with_anime_audio_bonus(
                     torrent, scraping_settings.anime_audio_order
                 )

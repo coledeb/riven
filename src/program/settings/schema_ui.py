@@ -88,19 +88,31 @@ def _title_sections(schema: dict[str, Any]) -> None:
             prop["title"] = _title(name)
 
 
-def _language_choices() -> dict[str, Any]:
+_LANGUAGE_FIELD_HELP = {
+    "required": "Only keep releases with at least one of these languages.",
+    "allowed": "Keep releases with any of these, even if they also have an excluded language.",
+    "exclude": "Drop releases with any of these languages.",
+    "preferred": "Rank releases with these languages higher.",
+}
+
+
+def _languages_blurb() -> str:
+    codes = ", ".join(
+        f"{name} = {code}"
+        for code, name in sorted(LANGUAGES_TRANSLATION_TABLE.items(), key=lambda kv: kv[1])
+    )
+    return (
+        "Enter two-letter language codes. Each code once per list. "
+        f"Languages Riven can detect: {codes}."
+    )
+
+
+def _language_list() -> dict[str, Any]:
+    codes = "|".join(sorted(LANGUAGES_TRANSLATION_TABLE))
     return {
         "type": "array",
         "uniqueItems": True,
-        "items": {
-            "type": "string",
-            "oneOf": [
-                {"const": code, "title": f"{name} ({code})"}
-                for code, name in sorted(
-                    LANGUAGES_TRANSLATION_TABLE.items(), key=lambda kv: kv[1]
-                )
-            ],
-        },
+        "items": {"type": "string", "pattern": f"^({codes})$"},
     }
 
 
@@ -111,12 +123,16 @@ def polish_settings_schema(schema: dict[str, Any]) -> dict[str, Any]:
     for definition in defs.values():
         _title_sections(definition)
 
-    languages = defs.get("LanguagesConfig", {}).get("properties", {})
+    languages_config = defs.get("LanguagesConfig", {})
+    if languages_config:
+        languages_config["description"] = _languages_blurb()
+    languages = languages_config.get("properties", {})
     for field in _LANGUAGE_FIELDS:
         if field in languages:
             languages[field] = {
                 **{k: v for k, v in languages[field].items() if k not in ("items", "type")},
-                **_language_choices(),
+                **_language_list(),
                 "title": _title(field),
+                "description": _LANGUAGE_FIELD_HELP[field],
             }
     return schema
