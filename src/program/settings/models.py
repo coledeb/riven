@@ -73,6 +73,15 @@ class AllDebridModel(Observable):
 class TorBoxModel(Observable):
     enabled: bool = Field(default=False, description="Enable TorBox")
     api_key: str = Field(default="", description="TorBox API key")
+    only_manage_own_torrents: bool = Field(
+        default=True,
+        description=(
+            "Only delete TorBox torrents that Riven added during this run. Turn off "
+            "to also clean up failed torrents that were already on the account; "
+            "torrents still used by Riven's library are always kept. Leave on if "
+            "other tools share the TorBox account."
+        ),
+    )
 
 
 class DownloadersModel(Observable):

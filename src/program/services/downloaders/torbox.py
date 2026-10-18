@@ -11,8 +11,11 @@ from urllib.parse import parse_qs, urlparse
 
 from loguru import logger
 from requests import exceptions
+from sqlalchemy import select
 
+from program.db.db import db_session
 from program.media.item import ProcessedItemType
+from program.media.media_entry import MediaEntry
 from program.services.downloaders.models import (
     DebridFile,
     InvalidDebridFileException,
@@ -163,8 +166,10 @@ class TorBoxDownloader(DownloaderBase):
       with add_only_if_cached), so nothing is ever downloaded from peers.
     - TorBox keeps one entry per hash per account: adding a hash that is
       already there returns the existing torrent. Such torrents may belong to
-      other tools sharing the account, so Riven only deletes torrents that it
-      created itself during this run.
+      other tools sharing the account, so by default Riven only deletes
+      torrents that it created itself during this run
+      (``only_manage_own_torrents``). Torrents that Riven's library still
+      links to are never deleted.
     - File links are stored without the API key and resolved through
       requestdl only when the VFS needs them.
     """
@@ -588,10 +593,12 @@ class TorBoxDownloader(DownloaderBase):
 
     def delete_torrent(self, torrent_id: int | str) -> None:
         """
-        Delete a torrent that Riven created on TorBox.
+        Delete a torrent on TorBox.
 
-        Torrents that were already on the account are left alone: other tools
-        sharing the account may still be using them.
+        With ``only_manage_own_torrents`` on (the default), torrents that were
+        already on the account are left alone: other tools sharing the account
+        may still be using them. With it off, those are deleted too, unless
+        Riven's library still links to them.
 
         Raises:
             TorBoxError: If the API returns a failing status.
@@ -603,10 +610,17 @@ class TorBoxDownloader(DownloaderBase):
             created = torrent_id in self._created
 
         if not created:
-            logger.debug(
-                f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
-            )
-            return
+            if self.settings.only_manage_own_torrents:
+                logger.debug(
+                    f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
+                )
+                return
+
+            if self._torrent_in_use(torrent_id):
+                logger.debug(
+                    f"Leaving TorBox torrent {torrent_id} in place: Riven's library still uses it"
+                )
+                return
 
         response, body = self._request(
             "POST",
@@ -621,6 +635,29 @@ class TorBoxDownloader(DownloaderBase):
 
         with self._lock:
             self._created.discard(torrent_id)
+
+    def _torrent_in_use(self, torrent_id: str) -> bool:
+        """
+        Whether any stored Riven file link points at this torrent.
+
+        A torrent re-added by hash keeps its id, so a pack can serve many items.
+        If the database can't be checked, the torrent counts as in use.
+        """
+
+        try:
+            link = f"{TorBoxAPI.BASE_URL}/torrents/requestdl?torrent_id={torrent_id}&"
+            with db_session() as session:
+                found = session.execute(
+                    select(MediaEntry.id)
+                    .where(MediaEntry.download_url.startswith(link, autoescape=True))
+                    .limit(1)
+                ).first()
+            return found is not None
+        except Exception as e:
+            logger.warning(
+                f"Could not check whether TorBox torrent {torrent_id} is in use; keeping it: {e}"
+            )
+            return True
 
     def _discard(self, torrent_id: str | None) -> None:
         """Best-effort removal of a torrent added during a failed check."""

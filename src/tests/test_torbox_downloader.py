@@ -391,3 +391,37 @@ def test_unrestrict_link_on_offline_cdn_server(downloader, fake, host, dead):
             downloader.unrestrict_link(link)
     else:
         assert downloader.unrestrict_link(link).download.startswith(f"https://{host}/")
+
+
+@pytest.fixture
+def manage_all(downloader, monkeypatch):
+    monkeypatch.setattr(downloader.settings, "only_manage_own_torrents", False)
+    return downloader
+
+
+def test_existing_torrent_deleted_when_managing_all(manage_all, fake, monkeypatch):
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    monkeypatch.setattr(manage_all, "_torrent_in_use", lambda _id: False)
+
+    manage_all.delete_torrent(existing_id)
+
+    assert fake.count("torrents/controltorrent") == 1
+    assert existing_id not in fake.torrents
+
+
+def test_torrent_in_library_kept_when_managing_all(manage_all, fake, monkeypatch):
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    monkeypatch.setattr(manage_all, "_torrent_in_use", lambda _id: True)
+
+    manage_all.delete_torrent(existing_id)
+
+    assert fake.count("torrents/controltorrent") == 0
+    assert existing_id in fake.torrents
+
+
+def test_torrent_in_use_when_database_unavailable(downloader, monkeypatch):
+    def broken():
+        raise RuntimeError("no database")
+
+    monkeypatch.setattr(torbox, "db_session", broken)
+    assert downloader._torrent_in_use("123") is True

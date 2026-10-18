@@ -31,7 +31,7 @@
 > - **Back off on 429s.** When TorBox returns a 429, the affected requests are paused for its `Retry-After` period instead of being retried in a loop.
 > - **Few link requests.** Links are resolved only when a file is actually opened, then reused.
 > - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
-> - **Shared accounts are safe.** Riven only deletes torrents it created itself, never ones that were already on the account.
+> - **Shared accounts are safe.** By default Riven only deletes torrents it created itself, never ones that were already on the account. Turn off `downloaders.torbox.only_manage_own_torrents` to also clean up failed torrents that were already there; torrents Riven's library still uses are always kept.
 > - **Offline CDN servers.** TorBox sometimes hands out links on CDN servers it has taken offline (their names resolve to `0.0.0.0`). Such a link is reported as unavailable, so Riven picks another source for that file instead of failing every read.
 > - **Expired CDN links.** TorBox's CDN answers an expired link with `400 Bad Request` rather than 403/410. Riven now treats a 400 like a 404: it fetches a fresh link once and retries, instead of failing every read of a file that has been sitting for a while.
 >
