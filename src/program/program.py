@@ -117,7 +117,9 @@ class Program(threading.Thread):
     def initialize_services(self):
         """Initialize all services."""
 
-        # Instantiate services fresh on each settings change; settings_manager observers handle reinit
+        # Instantiate services fresh on each settings change; settings_manager observers handle reinit.
+        # The filesystem service keeps the mounted VFS from the previous instance.
+        _previous_filesystem = self.services.filesystem if self.services else None
         _downloader = Downloader()
 
         self.services = Services(
@@ -130,7 +132,7 @@ class Program(threading.Thread):
             scraping=Scraping(),
             updater=Updater(),
             downloader=_downloader,
-            filesystem=FilesystemService(_downloader),
+            filesystem=FilesystemService(_downloader, _previous_filesystem),
             post_processing=PostProcessing(),
             notifications=NotificationService(),
         )

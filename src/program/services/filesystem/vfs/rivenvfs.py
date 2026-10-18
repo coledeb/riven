@@ -48,6 +48,7 @@ from typing import (
     TypedDict,
 )
 import threading
+import time
 import trio_util
 
 from kink import di
@@ -86,6 +87,10 @@ from ...streaming import (
     ChunksTooSlowException,
     ChunkCacheNotifier,
 )
+
+# How long RivenVFS() waits for the FUSE thread to finish mounting.
+MOUNT_WAIT_SECONDS = 10
+
 
 if TYPE_CHECKING:
     from program.media.item import MediaItem
@@ -234,10 +239,31 @@ class RivenVFS(pyfuse3.Operations):
         self._thread = threading.Thread(target=_fuse_runner, daemon=True)
         self._thread.start()
 
-        logger.log("VFS", f"RivenVFS mounted at {self._mountpoint}")
+        # The mount happens on the FUSE thread; wait briefly so callers
+        # (e.g. FilesystemService.validate) see the real state.
+        deadline = time.monotonic() + MOUNT_WAIT_SECONDS
+
+        while not self.mounted and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        if self.mounted:
+            logger.log("VFS", f"RivenVFS mounted at {self._mountpoint}")
+        else:
+            logger.warning(
+                f"RivenVFS not mounted at {self._mountpoint} after {MOUNT_WAIT_SECONDS}s"
+            )
 
         # Synchronize library profiles with VFS structure
         self.sync()
+
+    @property
+    def mountpoint(self) -> str:
+        return self._mountpoint
+
+    def set_downloader(self, downloader: Downloader) -> None:
+        """Point link refreshes at a new downloader after a settings reload."""
+
+        self.vfs_db.downloader = downloader
 
     @asynccontextmanager
     async def mountpoint_lifecycle(self) -> AsyncGenerator[None]:

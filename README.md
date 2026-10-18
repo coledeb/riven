@@ -42,6 +42,7 @@
 > - **Debridio scraper (TorBox only).** Debridio's Stremio addon returns playback links whose file-name titles hide season packs. The scraper takes each hash from the link, then asks TorBox's free `checkcached` (up to 100 hashes per call, paced at 60/min) for the real torrent name and file list. Uncached results are dropped. If TorBox is throttled, it falls back to Debridio's titles without waiting. Debridio's language flags are appended as words (e.g. `[MULTI FRENCH]`) so Riven's language filters still apply. A rejected key or inactive subscription is logged as such.
 > - **Torrentio language flags kept.** Torrentio's flag line (`🇬🇧 / 🇷🇺`) is appended to titles as words, so language exclusions also catch dubs whose names don't say the language (e.g. Cyrillic-only names).
 > - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses, e.g. `{"/mnt/debrid/riven": "\\\\server\\riven"}`. Windows targets get backslashes and case-insensitive matching. Leave it empty when Plex sees the same paths as Riven.
+> - **Settings changes no longer break the mount.** Saving settings used to build a second RivenVFS and mount it over the running one, which logged "RivenVFS not mounted" or crashed the backend once the library had content. The running mount is now kept and given the new downloader; it's only remounted if `mount_path` changes or the mount has died. Startup also waits for the mount before checking it.
 
 Services currently supported:
 

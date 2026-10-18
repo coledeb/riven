@@ -4,6 +4,8 @@ This service provides a interface for filesystem operations
 using the RivenVFS implementation.
 """
 
+import os
+
 from loguru import logger
 
 from program.media.item import MediaItem
@@ -17,7 +19,9 @@ from program.settings.models import FilesystemModel
 class FilesystemService(Runner[FilesystemModel]):
     """Filesystem service for VFS-only mode"""
 
-    def __init__(self, downloader: Downloader):
+    def __init__(
+        self, downloader: Downloader, previous: "FilesystemService | None" = None
+    ):
         super().__init__()
 
         from program.settings import settings_manager
@@ -26,6 +30,12 @@ class FilesystemService(Runner[FilesystemModel]):
         self.settings = settings_manager.settings.filesystem
         self.riven_vfs = None
         self.downloader = downloader  # Store for potential reinit
+
+        # pyfuse3 supports one mount per process, so a settings reload must keep
+        # the running VFS instead of mounting a second one over it.
+        if previous:
+            self.riven_vfs = previous._take_vfs(str(self.settings.mount_path))
+
         self._initialize_rivenvfs(downloader)
 
     @classmethod
@@ -40,6 +50,7 @@ class FilesystemService(Runner[FilesystemModel]):
             # If VFS already exists and is mounted, synchronize it with current settings
             if self.riven_vfs and self.riven_vfs.mounted:
                 logger.info("Synchronizing existing RivenVFS with library profiles")
+                self.riven_vfs.set_downloader(downloader)
                 self.riven_vfs.sync()
                 return
 
@@ -97,6 +108,26 @@ class FilesystemService(Runner[FilesystemModel]):
 
         # Yield the original item for state transition
         yield RunnerResult(media_items=[item])
+
+    def _take_vfs(self, mount_path: str):
+        """Hand the mounted VFS to a replacement service, or unmount it.
+
+        Returns the VFS when it is mounted at mount_path; this service keeps its
+        reference so jobs still running on it are not cut off. Otherwise closes
+        it (mount path changed or mount died) and returns None.
+        """
+
+        vfs = self.riven_vfs
+
+        if not vfs:
+            return None
+
+        if vfs.mounted and vfs.mountpoint == os.path.abspath(mount_path):
+            return vfs
+
+        self.close()
+
+        return None
 
     def close(self):
         """
