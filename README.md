@@ -42,7 +42,7 @@
 >
 > Changes in this fork that aren't strictly part of TorBox support:
 >
-> - **Debridio scraper (TorBox only).** New scraper that gets real torrent names and file lists for Debridio results from TorBox's `checkcached`.
+> - **Debridio scraper (TorBox only).** New scraper that gets real torrent names and file lists for Debridio results from TorBox's `checkcached`. Uploader tags like `[EZTVx.to]` are removed from those names, and when Torrentio returns the same torrent its title is kept, so a cached release isn't dropped as a "site" release.
 > - **Torrentio language flags kept.** Torrentio's flag emojis are added to titles as words, so language filters catch more dubs.
 > - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses.
 > - **Settings changes no longer break the mount.** Saving settings keeps the running RivenVFS mount instead of mounting a second one over it.
