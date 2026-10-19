@@ -56,7 +56,7 @@
 > - **Airing seasons get their released episodes.** Released episodes are scraped right after their season, not at the daily retry.
 > - **Seerr issues for stuck items (optional).** `content.overseerr.issues` opens a Seerr issue for a released item that stays missing and resolves it once available.
 > - **Slow sources get replaced (optional).** `stream.slow_replace` retries a fresh link for a file that keeps stalling in Plex, then swaps in another copy at the same path. Widespread slowness is reported via Apprise instead.
-> - **Blacklists expire for temporary problems.** Each blacklisted torrent records why: a pulled CDN server, a slow source or a torrent removed from the account comes back after 24 h, not cached or other download errors after 72 h, and wrong files or manual blacklists never come back. A repeat doubles the time, and after `max_strikes` it's permanent (`scraping.blacklist`).
+> - **Blacklists expire for temporary problems.** Each blacklisted torrent records why: a pulled CDN server, a slow source or a torrent removed from the account comes back after 24 h, not cached or other download errors after 72 h, and wrong files or manual blacklists never come back. A repeat doubles the time, and after `max_strikes` it's permanent (`scraping.blacklist`). Works with every debrid service; only the pulled-server check is TorBox-specific.
 > - **Failed downloads are remembered.** When every candidate torrent fails, their blacklist entries are now saved and the item moves on to re-scraping, instead of retrying the same torrents.
 > - **Calendar works.** `GET /api/v1/calendar` no longer returns 500.
 > - **Real stream errors reported.** A failed first connection raises its real error, so the VFS returns the matching errno.

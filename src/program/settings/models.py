@@ -938,7 +938,7 @@ class BlacklistModel(Observable):
     cdn_host_down_hours: float = Field(
         default=24,
         ge=0,
-        description="Hours a torrent stays blacklisted after its CDN server was pulled (0 = never expires)",
+        description="TorBox only: hours a torrent stays blacklisted after its CDN server was pulled (0 = never expires)",
     )
     slow_source_hours: float = Field(
         default=24,
