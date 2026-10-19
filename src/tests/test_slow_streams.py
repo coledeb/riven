@@ -1,9 +1,11 @@
 """Slow-stream replace: what counts as slow, fresh link first, cooldown, outages."""
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
+from program.services.streaming import media_stream
 from program.services.streaming.media_stream import MediaStream
 from program.services.streaming.slow_streams import (
     FileStats,
@@ -13,6 +15,7 @@ from program.services.streaming.slow_streams import (
     assess,
     session_bitrate,
 )
+from program.services.updaters.plex import PlexUpdater
 from program.settings.models import SlowStreamModel
 
 MB = 1024 * 1024
@@ -95,8 +98,6 @@ def test_health_forgets_idle_files_and_their_links():
 
 
 def test_stream_switches_to_a_pushed_link_once(monkeypatch):
-    from program.services.streaming import media_stream
-
     health = StreamHealth()
     monkeypatch.setattr(media_stream, "stream_health", health)
     stream = SimpleNamespace(
@@ -246,3 +247,39 @@ def test_still_slow_on_another_server_only_notifies(monitor):
 
     assert [c[0] for c in monitor.calls] == ["fresh", "notify"]
     assert "two different servers" in monitor.calls[1][1]
+
+
+def test_transcoded_session_stalls_trigger_refresh_then_replacement(
+    monitor, monkeypatch
+):
+    """Exercise the real Plex matcher through the monitor's decision path."""
+
+    live_session = SimpleNamespace(
+        ratingKey="798",
+        duration=1000000,
+        media=[SimpleNamespace(parts=[SimpleNamespace(id="1014", file=None)])],
+    )
+    library_item = SimpleNamespace(
+        media=[SimpleNamespace(parts=[SimpleNamespace(id=1014, file="/a.mkv")])]
+    )
+    updater = PlexUpdater.__new__(PlexUpdater)
+    updater.api = SimpleNamespace(
+        plex_server=SimpleNamespace(
+            sessions=lambda: [live_session],
+            fetchItem=lambda _: library_item,
+        )
+    )
+    updater.settings = SimpleNamespace(path_mappings={})
+    monitor.plex = updater
+    replace = Mock()
+    monkeypatch.setattr(monitor, "_replace", replace)
+
+    stall_twice(monitor, "a.mkv")
+    monitor.check()
+    assert monitor.calls == [("fresh", "a.mkv")]
+    replace.assert_not_called()
+
+    stall_twice(monitor, "a.mkv")
+    monitor.check()
+    replace.assert_called_once()
+    assert replace.call_args.args[0].sessions == [live_session]

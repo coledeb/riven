@@ -93,27 +93,73 @@ class PlexUpdater(BaseUpdater):
             return []
 
         return playing_sessions(
-            self.api.plex_server.sessions(), paths, self.settings.path_mappings
+            self.api.plex_server.sessions(),
+            paths,
+            self.settings.path_mappings,
+            fetch_item=self.api.plex_server.fetchItem,
         )
 
 
-def playing_sessions(sessions, paths: list[str], mappings: dict[str, str]) -> list:
-    """The Plex sessions whose file is one of these Riven paths (as Plex sees them)."""
+def playing_sessions(
+    sessions, paths: list[str], mappings: dict[str, str], *, fetch_item=None
+) -> list:
+    """Match source files, retaining the live sessions needed by ``stop()``.
+
+    Transcoded sessions can omit Part.file. Resolve those parts from library
+    metadata by part ID, never by title or by an arbitrary alternate version.
+    Metadata is cached only for this call so replacements cannot leave stale paths.
+    """
 
     def key(path: str) -> str:
         return path.lower() if is_windows_path(path) else path
 
     wanted = {key(map_path(path, mappings)) for path in paths}
+    metadata = {}
+    found = []
 
-    return [
-        session
-        for session in sessions
-        if any(
-            key(part.file or "") in wanted
-            for media in session.media
-            for part in media.parts
-        )
-    ]
+    for session in sessions:
+        parts = [part for media in session.media for part in media.parts]
+        source_paths = [part.file for part in parts if part.file]
+        missing = [part for part in parts if not part.file]
+        rating_key = getattr(session, "ratingKey", None)
+
+        if missing and fetch_item and rating_key is not None:
+            cache_key = str(rating_key)
+            if cache_key not in metadata:
+                try:
+                    metadata[cache_key] = fetch_item(rating_key)
+                except Exception as exc:
+                    # Do not let one stale/inaccessible item hide other sessions.
+                    # Exception text can contain credentials or request URLs.
+                    logger.warning(
+                        f"Plex playback: cannot resolve source for item {cache_key} "
+                        f"({type(exc).__name__})"
+                    )
+                    metadata[cache_key] = None
+
+            item = metadata[cache_key]
+            library_parts = [
+                part
+                for media in getattr(item, "media", [])
+                for part in media.parts
+                if part.file
+            ]
+            for part in missing:
+                part_id = getattr(part, "id", None)
+                if part_id is not None:
+                    source_paths.extend(
+                        candidate.file
+                        for candidate in library_parts
+                        if str(getattr(candidate, "id", None)) == str(part_id)
+                    )
+                elif len(library_parts) == 1:
+                    # No ID: only an unambiguous single source is safe to use.
+                    source_paths.append(library_parts[0].file)
+
+        if any(key(path) in wanted for path in source_paths):
+            found.append(session)
+
+    return found
 
 
 def is_windows_path(path: str) -> bool:
