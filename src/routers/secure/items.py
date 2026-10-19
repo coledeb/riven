@@ -938,6 +938,84 @@ async def get_item_streams(
     )
 
 
+class BlacklistEntry(BaseModel):
+    item_id: int = Field(description="The movie or episode the torrent is blacklisted for")
+    item_label: str = Field(description="e.g. S01E02 for an episode, else the title")
+    stream_id: int
+    infohash: str
+    raw_title: str
+    resolution: str | None
+    reason: str = Field(description="Why it was blacklisted (unknown for old entries)")
+    blacklisted_at: datetime | None
+    expires_at: datetime | None = Field(description="None = permanent")
+    strikes: int = Field(description="Times blacklisted for this item")
+
+
+class BlacklistResponse(BaseModel):
+    entries: list[BlacklistEntry]
+
+
+@router.get(
+    "/{item_id}/blacklist",
+    summary="Get Media Item Blacklist",
+    description="Torrents currently blacklisted for an item, with why and until when. For a show or season this includes its episodes.",
+    operation_id="get_item_blacklist",
+    response_model=BlacklistResponse,
+)
+async def get_item_blacklist(
+    item_id: Annotated[
+        int,
+        Path(description="The ID of the media item", ge=1),
+    ],
+) -> BlacklistResponse:
+    with db_session() as session:
+        item = (
+            session.execute(select(MediaItem).where(MediaItem.id == item_id))
+            .unique()
+            .scalar_one_or_none()
+        )
+
+        if not item:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Item not found"
+            )
+
+        items: list[MediaItem] = [item]
+
+        if isinstance(item, Show):
+            for season in item.seasons:
+                items += [season, *season.episodes]
+        elif isinstance(item, Season):
+            items += item.episodes
+
+        def label(i: MediaItem) -> str:
+            if isinstance(i, Episode) and i.parent:
+                return f"S{i.parent.number or 0:02d}E{i.number or 0:02d}"
+            if isinstance(i, Season):
+                return f"Season {i.number}"
+            return i.log_string
+
+        entries = [
+            BlacklistEntry(
+                item_id=i.id,
+                item_label=label(i),
+                stream_id=e.stream.id,
+                infohash=e.stream.infohash,
+                raw_title=e.stream.raw_title,
+                resolution=e.stream.resolution,
+                reason=e.reason or str(BlacklistReason.UNKNOWN),
+                blacklisted_at=e.blacklisted_at,
+                expires_at=e.expires_at,
+                strikes=e.strikes,
+            )
+            for i in items
+            for e in i.blacklist_entries
+            if e.released_at is None
+        ]
+
+    return BlacklistResponse(entries=entries)
+
+
 @router.post(
     "/{item_id}/streams/{stream_id}/blacklist",
     summary="Blacklist Media Item Stream",
