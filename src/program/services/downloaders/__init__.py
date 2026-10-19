@@ -113,6 +113,7 @@ class Downloader(Runner[None, DownloaderBase]):
 
         # Track if we hit circuit breaker on any service
         hit_circuit_breaker = False
+        unexpected_error = False
 
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
@@ -257,6 +258,7 @@ class Downloader(Runner[None, DownloaderBase]):
                     yield RunnerResult(media_items=[item])
 
         except Exception as e:
+            unexpected_error = True
             logger.error(
                 f"Unexpected error in downloader for {item.log_string} ({item.id}): {e}"
             )
@@ -278,6 +280,12 @@ class Downloader(Runner[None, DownloaderBase]):
                 logger.debug(
                     f"Failed to download any streams for {item.log_string} ({item.id})"
                 )
+
+                # Hand the item back so its new blacklist entries are saved
+                # (and it moves on to re-scraping); otherwise nothing is
+                # committed and the same streams are tried again forever.
+                if not unexpected_error:
+                    yield RunnerResult(media_items=[item])
         else:
             # Clear service cooldowns on successful download
             self._service_cooldowns.clear()

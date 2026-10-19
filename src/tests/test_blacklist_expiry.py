@@ -158,3 +158,30 @@ def test_dead_link_reason():
     assert DebridServiceLinkUnavailable("torbox", "x").reason == "torrent_removed"
     e = DebridServiceLinkUnavailable("torbox", "x", reason="cdn_host_down")
     assert BlacklistReason(e.reason) is BlacklistReason.CDN_HOST_DOWN
+
+
+def test_downloader_saves_blacklists_when_every_stream_fails(config):
+    """Log 92: uncached candidates failed, but nothing was committed."""
+
+    from program.core.runner import RunnerResult
+    from program.services.downloaders import Downloader
+
+    service = SimpleNamespace(
+        key="torbox", get_instant_availability=lambda *_args, **_kwargs: None
+    )
+    downloader = object.__new__(Downloader)
+    downloader.initialized_services = [service]
+    downloader._service_cooldowns = {}
+    downloader.subtitles_enabled = False
+
+    movie = Movie({"title": "Movie"})
+    a, b = make_stream("a" * 40), make_stream("b" * 40)
+    movie.streams.extend([a, b])
+
+    results = list(downloader.run(movie))
+
+    assert len(results) == 1 and isinstance(results[0], RunnerResult)
+    assert results[0].media_items == [movie]
+    assert movie.streams == []
+    assert {e.reason for e in movie.blacklist_entries} == {BlacklistReason.NOT_CACHED}
+    assert all(e.expires_at for e in movie.blacklist_entries)
