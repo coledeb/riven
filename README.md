@@ -64,6 +64,7 @@
 > - **Manual retry and scrape always run.** Retry, Retry Library and auto-scrape replace events queued for later (such as a downloader cooldown) instead of being ignored.
 > - **Missing items return 404.** `GET /api/v1/items/<id>` answers 404 for an unknown item instead of 500.
 > - **Service names spelled right in settings.** Real-Debrid, Debrid-Link, AllDebrid, MediaFusion, RARBG.
+> - **Live progress shows the right service.** The `event_update` stream and `/api/v1/events` list each job under the service running it, so the frontend can show what Riven is doing with an item.
 >
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
