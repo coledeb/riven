@@ -698,7 +698,15 @@ class MediaStream:
             # or else the stream will not receive the value.
             if read_type == "body_read" and not self.is_streaming.value:
                 with trio.fail_after(self.config.connect_timeout_seconds):
-                    await self.nursery.start(self.run, chunk_range.position)
+                    try:
+                        await self.nursery.start(self.run, chunk_range.position)
+                    except RuntimeError:
+                        # run() stores a failed first connection in _stream_error and
+                        # returns without calling started(); raise the real error.
+                        if self._stream_error.value:
+                            raise self._stream_error.value from None
+
+                        raise
 
             self.recent_reads.current_read.value = Read(
                 chunk_range=chunk_range,
