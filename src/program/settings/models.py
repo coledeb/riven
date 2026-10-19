@@ -1008,6 +1008,8 @@ class RTNSettingsModel(SettingsModel, Observable):
 
         unknown: set[str] = set()
         for field in ("required", "allowed", "exclude", "preferred"):
+            if field not in type(value).model_fields:  # "allowed" is newer than RTN 1.9.3
+                continue
             codes = [c.strip().lower() for c in getattr(value, field, None) or []]
             unknown.update(c for c in codes if c not in LANGUAGES_TRANSLATION_TABLE)
             setattr(value, field, list(dict.fromkeys(codes)))
