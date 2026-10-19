@@ -41,7 +41,7 @@ def test_pack_match_skips_episode_that_blacklisted_it(monkeypatch):
     for ep in (good, dead):
         ep.parent = season
     season.parent = show
-    dead.blacklisted_streams.append(make_stream())
+    dead.blacklist_stream(make_stream())
 
     updated = []
     downloader = object.__new__(Downloader)

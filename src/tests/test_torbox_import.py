@@ -161,7 +161,7 @@ def test_show_gap_only_for_episodes_without_a_file():
 
     dead = Stream.__mapper__.class_manager.new_instance()
     dead.infohash = "a" * 40
-    e2.blacklisted_streams.append(dead)
+    e2.blacklist_stream(dead)
     assert not has_gap(show, pack("Show.S01E02.1080p.mkv"))
 
     e2.last_state = States.Completed
@@ -383,7 +383,7 @@ def test_replace_targets_are_episodes_with_a_file_from_another_torrent():
 
     dead = Stream.__mapper__.class_manager.new_instance()
     dead.infohash = "a" * 40
-    e1.blacklisted_streams.append(dead)  # failed for e1 before (e.g. a dead server)
+    e1.blacklist_stream(dead)  # failed for e1 before (e.g. a dead server)
     assert targets(show, torrent) == [e1]  # the user's add overrides that
 
     TorBoxAccountImport._unblacklist([e1], "a" * 40)

@@ -25,7 +25,12 @@ from program.media.media_entry import MediaEntry
 from program.apis.tvdb_api import SeriesRelease
 from program.media.models import ActiveStream
 
-from .stream import Stream
+from .stream import (
+    BlacklistReason,
+    Stream,
+    StreamBlacklistRelation,
+    blacklist_expiry,
+)
 
 if TYPE_CHECKING:
     from program.media.filesystem_entry import FilesystemEntry
@@ -85,11 +90,9 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         lazy="selectin",
         cascade="all",
     )
-    blacklisted_streams: Mapped[list[Stream]] = relationship(
-        secondary="StreamBlacklistRelation",
-        back_populates="blacklisted_parents",
+    blacklist_entries: Mapped[list[StreamBlacklistRelation]] = relationship(
         lazy="selectin",
-        cascade="all",
+        cascade="all, delete-orphan",
     )
 
     aliases: Mapped[dict[str, list[str]] | None] = mapped_column(
@@ -170,7 +173,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
         self.scraped_at = None
         self.scraped_times = 0
         self.streams = []
-        self.blacklisted_streams = []
+        self.blacklist_entries = []
 
         # Media related
         self.title = item.get("title", "")
@@ -238,7 +241,15 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
 
         return (previous_state, new_state)
 
-    def blacklist_active_stream(self) -> bool:
+    @property
+    def blacklisted_streams(self) -> list[Stream]:
+        """Streams currently blacklisted for this item (expired ones excluded)."""
+
+        return [e.stream for e in self.blacklist_entries if e.released_at is None]
+
+    def blacklist_active_stream(
+        self, reason: BlacklistReason = BlacklistReason.UNKNOWN
+    ) -> bool:
         """Blacklist the currently active stream for this item."""
 
         if not self.active_stream:
@@ -256,7 +267,7 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
             )
 
             if stream:
-                self.blacklist_stream(stream)
+                self.blacklist_stream(stream, reason)
 
                 logger.debug(
                     f"Blacklisted stream {stream.infohash} for {self.log_string}"
@@ -286,35 +297,89 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
 
         return False
 
-    def blacklist_stream(self, stream: Stream) -> bool:
-        """Blacklist a stream by moving it from streams to blacklisted_streams."""
+    def blacklist_stream(
+        self, stream: Stream, reason: BlacklistReason = BlacklistReason.UNKNOWN
+    ) -> bool:
+        """Blacklist a stream by moving it from streams to blacklisted_streams.
+
+        Temporary reasons expire (scraping.blacklist); a stream blacklisted again
+        after it expired counts a strike, which doubles the time.
+        """
 
         # An episode's active stream is often its season's or show's pack, which
         # isn't in the episode's own streams; blacklist it on the episode anyway.
         if stream in self.streams:
             self.streams.remove(stream)
 
-        if stream not in self.blacklisted_streams:
-            self.blacklisted_streams.append(stream)
+        entry = next((e for e in self.blacklist_entries if e.stream == stream), None)
 
-            logger.debug(f"Blacklisted stream {stream.infohash} for {self.log_string}")
+        if entry and entry.released_at is None:
+            return False
 
-            return True
+        now = datetime.now()
 
-        return False
+        if entry:
+            entry.strikes += 1
+        else:
+            entry = StreamBlacklistRelation(stream=stream, strikes=1)
+            self.blacklist_entries.append(entry)
+
+        entry.reason = str(reason)
+        entry.blacklisted_at = now
+        entry.released_at = None
+        entry.expires_at = blacklist_expiry(reason, entry.strikes, now)
+
+        until = f" until {entry.expires_at:%Y-%m-%d %H:%M}" if entry.expires_at else ""
+
+        logger.debug(
+            f"Blacklisted stream {stream.infohash} for {self.log_string} ({reason}, strike {entry.strikes}){until}"
+        )
+
+        return True
 
     def unblacklist_stream(self, stream: Stream) -> None:
-        """Unblacklist a stream by moving it from blacklisted_streams to streams."""
+        """Unblacklist a stream by moving it from blacklisted_streams to streams.
 
-        if stream in self.blacklisted_streams:
-            self.blacklisted_streams.remove(stream)
+        Also forgets its strikes: this is the user's (or their own torrent's) call.
+        """
 
-            if stream not in self.streams:
-                self.streams.append(stream)
+        entry = next((e for e in self.blacklist_entries if e.stream == stream), None)
 
-            logger.debug(
-                f"Unblacklisted stream {stream.infohash} for {self.log_string}"
-            )
+        if entry is None:
+            return
+
+        self.blacklist_entries.remove(entry)
+
+        if stream not in self.streams:
+            self.streams.append(stream)
+
+        logger.debug(f"Unblacklisted stream {stream.infohash} for {self.log_string}")
+
+    def release_expired_blacklist(self, now: datetime | None = None) -> list[Stream]:
+        """Put streams whose blacklisting expired back into streams."""
+
+        now = now or datetime.now()
+        released = list[Stream]()
+
+        for entry in self.blacklist_entries:
+            if (
+                entry.released_at is None
+                and entry.expires_at is not None
+                and entry.expires_at <= now
+            ):
+                entry.released_at = now
+
+                if entry.stream not in self.streams:
+                    self.streams.append(entry.stream)
+
+                released.append(entry.stream)
+
+        return released
+
+    def clear_blacklist(self) -> None:
+        """Forget every blacklisted stream (and its strikes) for this item."""
+
+        self.blacklist_entries.clear()
 
     def schedule(
         self,

@@ -926,6 +926,56 @@ class AIOStreamsConfig(Observable):
 ANIME_AUDIO_TYPES = ("dual", "japanese", "dubbed")
 
 
+class BlacklistModel(Observable):
+    expiry_enabled: bool = Field(
+        default=True,
+        description=(
+            "Let blacklist entries for temporary problems expire, so the torrent "
+            "goes back into the item's pool of sources. Wrong files, manual "
+            "blacklists and entries from before this setting never expire."
+        ),
+    )
+    cdn_host_down_hours: float = Field(
+        default=24,
+        ge=0,
+        description="Hours a torrent stays blacklisted after its CDN server was pulled (0 = never expires)",
+    )
+    slow_source_hours: float = Field(
+        default=24,
+        ge=0,
+        description="Hours a torrent stays blacklisted after it was too slow to play (0 = never expires)",
+    )
+    not_cached_hours: float = Field(
+        default=72,
+        ge=0,
+        description="Hours a torrent stays blacklisted after it wasn't cached on the debrid service (0 = never expires)",
+    )
+    torrent_removed_hours: float = Field(
+        default=24,
+        ge=0,
+        description="Hours a torrent stays blacklisted after it or its file disappeared from the debrid account (0 = never expires)",
+    )
+    download_error_hours: float = Field(
+        default=72,
+        ge=0,
+        description="Hours a torrent stays blacklisted after any other download failure (0 = never expires)",
+    )
+    max_strikes: int = Field(
+        default=4,
+        ge=0,
+        description=(
+            "Each time the same torrent is blacklisted again for the same item, "
+            "its time doubles; once that has happened more than this many times "
+            "it stays blacklisted for good (0 = never permanent)"
+        ),
+    )
+    check_interval: int = Field(
+        default=900,
+        ge=60,
+        description="Seconds between checks for expired blacklist entries",
+    )
+
+
 class ScraperModel(Observable):
     after_2: float = Field(
         default=2, description="Hours to wait after 2 failed scrapes"
@@ -1029,6 +1079,10 @@ class ScraperModel(Observable):
     aiostreams: AIOStreamsConfig = Field(
         default_factory=lambda: AIOStreamsConfig(),
         description="AIOStreams configuration",
+    )
+    blacklist: BlacklistModel = Field(
+        default_factory=lambda: BlacklistModel(),
+        description="When blacklisted torrents go back into an item's pool of sources",
     )
 
 

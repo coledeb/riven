@@ -11,7 +11,7 @@ from program.media.item import (
     Show,
 )
 from program.media.state import States
-from program.media.stream import Stream
+from program.media.stream import BlacklistReason, Stream
 from program.media.media_entry import MediaEntry
 from program.media.models import ActiveStream, MediaMetadata
 from program.services.downloaders.models import (
@@ -124,6 +124,7 @@ class Downloader(Runner[None, DownloaderBase]):
                 # Try each available service for this stream before blacklisting
                 stream_failed_on_all_services = True
                 stream_hit_circuit_breaker = False
+                failure_reason = BlacklistReason.NOT_CACHED
 
                 for service in available_services:
                     logger.debug(
@@ -144,6 +145,7 @@ class Downloader(Runner[None, DownloaderBase]):
                             logger.debug(
                                 f"Stream {stream.infohash} not available on {service.key}"
                             )
+                            failure_reason = BlacklistReason.NOT_CACHED
                             continue
 
                         # Try to download using this service
@@ -189,6 +191,13 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.debug(
                             f"Stream {stream.infohash} failed on {service.key}: {e}"
                         )
+
+                        if isinstance(e, NoMatchingFilesException):
+                            failure_reason = BlacklistReason.WRONG_FILES
+                        elif isinstance(e, NotCachedException):
+                            failure_reason = BlacklistReason.NOT_CACHED
+                        else:
+                            failure_reason = BlacklistReason.DOWNLOAD_ERROR
 
                         if download_result and download_result.id:
                             try:
@@ -240,7 +249,7 @@ class Downloader(Runner[None, DownloaderBase]):
                         logger.debug(
                             f"Stream {stream.infohash} failed on all {len(available_services)} available service(s), blacklisting"
                         )
-                        item.blacklist_stream(stream)
+                        item.blacklist_stream(stream, failure_reason)
 
                 tried_streams += 1
 

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, object_session
 from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
+from program.media.stream import BlacklistReason
 from program.media.state import States
 from program.types import Event
 from program.program import Program
@@ -526,7 +527,7 @@ def _reset_scrape_state(item: MediaItem) -> None:
     item.scraped_times = 0
     item.failed_attempts = 0
     item.streams.clear()
-    item.blacklisted_streams.clear()
+    item.clear_blacklist()
     item.active_stream = None
     MediaItem.store_state(item, States.Indexed)
 
@@ -624,7 +625,7 @@ async def reset_items(
                             s (Session): Database session (provided for caller context; not used directly here).
                         """
 
-                        i.blacklist_active_stream()
+                        i.blacklist_active_stream(BlacklistReason.MANUAL)
                         if isinstance(i, (Show, Season)):
                             _reset_scrape_state(i)
                         else:
@@ -984,7 +985,7 @@ async def blacklist_stream(
             )
 
         def mutation(i: MediaItem, s: Session):
-            i.blacklist_stream(stream)
+            i.blacklist_stream(stream, BlacklistReason.MANUAL)
 
         apply_item_mutation(
             di[Program],
@@ -1088,7 +1089,7 @@ async def reset_item_streams(
 
         def mutation(i: MediaItem, s: Session):
             i.streams.clear()
-            i.blacklisted_streams.clear()
+            i.clear_blacklist()
             i.active_stream = None
 
         apply_item_mutation(

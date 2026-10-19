@@ -385,6 +385,7 @@ class SlowStreamMonitor:
 
         from program.db.db import db_session
         from program.media.item import MediaItem
+        from program.media.stream import BlacklistReason
         from program.services.downloaders.torbox_import import account_import
         from program.types import Event
         from routers.secure.items import apply_item_mutation
@@ -409,7 +410,7 @@ class SlowStreamMonitor:
                 return
 
             def mutation(i: MediaItem, s: Session) -> None:  # noqa: ARG001
-                i.blacklist_active_stream()
+                i.blacklist_active_stream(BlacklistReason.SLOW_SOURCE)
                 i.reset(keep_vfs=True)
 
             apply_item_mutation(

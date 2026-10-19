@@ -13,6 +13,7 @@ from program.services.streaming.exceptions import (
     DebridServiceLinkUnavailable,
 )
 from program.media.item import MediaItem
+from program.media.stream import BlacklistReason
 from program.types import Event
 from routers.secure.items import apply_item_mutation
 from program.utils.debrid_cdn_url import DebridCDNUrl
@@ -153,8 +154,10 @@ class VFSDatabase:
                 if entry.media_item:
                     item_id = entry.media_item.id
 
+                    reason = BlacklistReason(e.reason)
+
                     def mutation(i: MediaItem, s: Session):
-                        i.blacklist_active_stream()
+                        i.blacklist_active_stream(reason)
                         i.reset(keep_vfs=True)
 
                     apply_item_mutation(

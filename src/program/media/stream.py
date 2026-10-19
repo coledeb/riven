@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy
@@ -29,6 +31,49 @@ class StreamRelation(Base):
     )
 
 
+class BlacklistReason(StrEnum):
+    """Why a stream was blacklisted for an item; decides whether it expires."""
+
+    CDN_HOST_DOWN = "cdn_host_down"  # its CDN server was pulled (0.0.0.0)
+    SLOW_SOURCE = "slow_source"  # too slow to play (stream.slow_replace)
+    NOT_CACHED = "not_cached"  # not cached on the debrid service when tried
+    TORRENT_REMOVED = "torrent_removed"  # torrent or file gone from the account
+    DOWNLOAD_ERROR = "download_error"  # any other download failure
+    WRONG_FILES = "wrong_files"  # has no file for the item (permanent)
+    MANUAL = "manual"  # blacklisted by the user (permanent)
+    UNKNOWN = "unknown"  # permanent
+
+
+_EXPIRY_SETTING = {
+    BlacklistReason.CDN_HOST_DOWN: "cdn_host_down_hours",
+    BlacklistReason.SLOW_SOURCE: "slow_source_hours",
+    BlacklistReason.NOT_CACHED: "not_cached_hours",
+    BlacklistReason.TORRENT_REMOVED: "torrent_removed_hours",
+    BlacklistReason.DOWNLOAD_ERROR: "download_error_hours",
+}
+
+
+def blacklist_expiry(
+    reason: BlacklistReason, strikes: int, now: datetime
+) -> datetime | None:
+    """When a blacklisting expires (None = never): the reason's hours, doubled per extra strike."""
+
+    from program.settings import settings_manager
+
+    config = settings_manager.settings.scraping.blacklist
+    setting = _EXPIRY_SETTING.get(reason)
+
+    if not config.expiry_enabled or setting is None:
+        return None
+
+    hours = getattr(config, setting)
+
+    if hours <= 0 or (config.max_strikes and strikes > config.max_strikes):
+        return None
+
+    return now + timedelta(hours=hours * 2 ** (strikes - 1))
+
+
 class StreamBlacklistRelation(Base):
     __tablename__ = "StreamBlacklistRelation"
 
@@ -39,10 +84,19 @@ class StreamBlacklistRelation(Base):
     stream_id: Mapped[int] = mapped_column(
         sqlalchemy.ForeignKey("Stream.id", ondelete="CASCADE")
     )
+    reason: Mapped[str | None] = mapped_column(sqlalchemy.String, nullable=True)
+    blacklisted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # None = permanent
+    expires_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    # Set once expired and back in the item's streams; the row stays to count strikes
+    released_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    strikes: Mapped[int] = mapped_column(default=1, server_default="1")
+    stream: Mapped["Stream"] = relationship(lazy="selectin")
 
     __table_args__ = (
         Index("ix_streamblacklistrelation_media_item_id", "media_item_id"),
         Index("ix_streamblacklistrelation_stream_id", "stream_id"),
+        Index("ix_streamblacklistrelation_expires_at", "expires_at"),
     )
 
 
@@ -62,8 +116,8 @@ class Stream(Base):
     )
     blacklisted_parents: Mapped[list["MediaItem"]] = relationship(
         secondary="StreamBlacklistRelation",
-        back_populates="blacklisted_streams",
         lazy="selectin",
+        viewonly=True,
     )
 
     __table_args__ = (

@@ -42,6 +42,7 @@ from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.media_entry import MediaEntry
+from program.media.stream import BlacklistReason
 from program.media.state import States
 from program.services.downloaders.models import DownloadedTorrent
 from program.services.downloaders.torbox import TorBoxNotFound
@@ -791,7 +792,7 @@ class TorBoxAccountImport:
                         continue
 
                     def mutation(i: MediaItem, s: Session) -> None:  # noqa: ARG001
-                        i.blacklist_active_stream()
+                        i.blacklist_active_stream(BlacklistReason.TORRENT_REMOVED)
                         i.reset(keep_vfs=True)
 
                     apply_item_mutation(

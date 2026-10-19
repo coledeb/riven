@@ -112,6 +112,11 @@ class ProgramScheduler:
 
         scheduled_functions[slow_stream_monitor] = {"interval": 15}
 
+        # Put torrents whose blacklisting expired back into their item's pool
+        scheduled_functions[self._release_expired_blacklist] = {
+            "interval": settings_manager.settings.scraping.blacklist.check_interval
+        }
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}
@@ -185,6 +190,60 @@ class ProgramScheduler:
 
             logger.debug(
                 f"Scheduled {service_name} to run every {update_interval} seconds."
+            )
+
+    def _release_expired_blacklist(self) -> None:
+        """Move streams whose blacklisting expired back into their items' streams."""
+
+        from program.media.stream import StreamBlacklistRelation
+
+        now = datetime.now()
+        retry = set[int]()
+        released = 0
+
+        with db_session() as session:
+            item_ids = (
+                session.execute(
+                    select(StreamBlacklistRelation.media_item_id)
+                    .where(StreamBlacklistRelation.released_at.is_(None))
+                    .where(StreamBlacklistRelation.expires_at <= now)
+                    .distinct()
+                )
+                .scalars()
+                .all()
+            )
+
+            for item_id in item_ids:
+                item = session.get(MediaItem, item_id)
+
+                if item is None:
+                    continue
+
+                streams = item.release_expired_blacklist(now)
+                released += len(streams)
+
+                for stream in streams:
+                    logger.debug(
+                        f"Blacklisting of {stream.infohash} for {item.log_string} expired; back in its pool"
+                    )
+
+                if item.last_state not in (
+                    States.Completed,
+                    States.Paused,
+                    States.Unreleased,
+                ):
+                    retry.add(item.id)
+
+            session.commit()
+
+        for item_id in retry:
+            self.program.em.add_event(
+                Event(emitted_by="BlacklistExpiry", item_id=item_id)
+            )
+
+        if released:
+            logger.info(
+                f"Released {released} expired blacklist entr{'y' if released == 1 else 'ies'} ({len(retry)} item(s) retried)"
             )
 
     def _retry_library(self) -> None:

@@ -795,7 +795,9 @@ class TorBoxDownloader(DownloaderBase):
                 logger.warning(
                     f"TorBox torrent {torrent_id} file {file_id} is on an offline CDN server ({urlparse(url).hostname}); picking another source"
                 )
-                raise DebridServiceLinkUnavailable(provider=self.key, link=link)
+                raise DebridServiceLinkUnavailable(
+                    provider=self.key, link=link, reason="cdn_host_down"
+                )
 
             return UnrestrictedLink(download=url, filename="file", filesize=0)
 
