@@ -31,6 +31,15 @@ class FakeTMDB:
     def get_tvdb_id(self, _tmdb_id):
         return self.tvdb
 
+    titles: dict = {}
+    ids: dict = {}
+
+    def find_id(self, _kind, _source, external_id):
+        return self.ids.get(external_id)
+
+    def get_titles(self, _kind, tmdb_id):
+        return self.titles.get(str(tmdb_id), set())
+
 
 @pytest.fixture
 def importer(tmp_path, monkeypatch):
@@ -257,28 +266,21 @@ def test_first_run_treats_existing_torrents_as_riven_s(importer, monkeypatch):
     assert importer._state_file.exists()
 
 
-def test_library_match_uses_aliases_subtitle_halves_and_season_years(
-    importer, monkeypatch
-):
-    from datetime import datetime
+def row(id, title, aired_at=None, aliases=None, tvdb_id=None):
+    return SimpleNamespace(
+        id=id,
+        title=title,
+        aired_at=aired_at,
+        aliases=aliases or {},
+        tmdb_id=None,
+        tvdb_id=tvdb_id,
+        imdb_id=None,
+    )
 
-    rows = [
-        SimpleNamespace(
-            id=301,
-            title="Demon Slayer: Kimetsu no Yaiba",
-            aired_at=datetime(2019, 4, 6),
-            aliases={"jpn": ["kny"]},
-        ),
-        SimpleNamespace(
-            id=486, title="Coyote vs. Acme", aired_at=datetime(2026, 8, 20), aliases={}
-        ),
-        SimpleNamespace(
-            id=512, title="Tulsa King", aired_at=datetime(2022, 11, 13), aliases={}
-        ),
-        SimpleNamespace(id=513, title="King", aired_at=None, aliases={}),
-        SimpleNamespace(id=514, title="The King", aired_at=None, aliases={}),
-        SimpleNamespace(id=515, title="Lost", aired_at=None, aliases={}),
-    ]
+
+@pytest.fixture
+def library(monkeypatch):
+    rows = []
 
     class FakeSession:
         def execute(self, _query):
@@ -289,6 +291,23 @@ def test_library_match_uses_aliases_subtitle_halves_and_season_years(
         yield FakeSession()
 
     monkeypatch.setattr(torbox_import, "db_session", fake_session)
+    return rows
+
+
+def test_library_match_uses_aliases_subtitle_halves_and_season_years(
+    importer, library
+):
+    from datetime import datetime
+
+    library += [
+        row(
+            301,
+            "Demon Slayer: Kimetsu no Yaiba",
+            datetime(2019, 4, 6),
+            {"jpn": ["kny"]},
+        ),
+        row(486, "Coyote vs. Acme", datetime(2026, 8, 20)),
+    ]
     lib = importer._match_library
 
     assert lib("show", "kny", None, "exact").item_id == 301
@@ -298,16 +317,49 @@ def test_library_match_uses_aliases_subtitle_halves_and_season_years(
     assert lib("movie", "Coyote vs Acme", 2026, "exact").item_id == 486
     assert lib("movie", "Coyote vs Acme", 2019, "exact") is None
 
-    # Two-language names: the longest title (2+ words) at either end, word-aligned
-    assert lib("show", "Král Tulsy Tulsa King", None, "exact") is None
-    assert lib("show", "Král Tulsy Tulsa King", None, "edges").item_id == 512
-    assert lib("show", "Tulsa King Král Tulsy", None, "edges").item_id == 512
-    assert lib("show", "Lost Girl", None, "edges") is None
-    assert lib("show", "Burger King", None, "edges") is None
-    assert lib("show", "Mistulsa King", None, "edges") is None
-    assert lib("show", "The King Tulsa King", None, "edges") == (
-        "2 titles in the library match 'The King Tulsa King'"
+
+def test_library_two_language_name_needs_both_titles(importer, library, tmdb):
+    library += [
+        row(512, "Tulsa King", tvdb_id="t512"),
+        row(513, "King", aliases={"cz": ["Kral"]}),
+        row(514, "Law & Order", tvdb_id="t514"),
+        row(515, "Law & Order: Special Victims Unit", tvdb_id="t515"),
+    ]
+    fake = FakeTMDB()
+    fake.ids = {"t512": "153312", "t514": "549", "t515": "2734"}
+    fake.titles = {"153312": {"Tulsa King", "Král Tulsy", "Król Tulsy"}}
+    tmdb(fake)
+
+    def lib(title):
+        return importer._match_library("show", title, None, "two_titles")
+
+    # The other half must be another title of the same show (TMDB or alias)
+    assert lib("Král Tulsy Tulsa King").item_id == 512
+    assert lib("Tulsa King Kral Tulsy").item_id == 512
+    assert lib("Kral King").item_id == 513
+    assert lib("Burger King") is None
+    assert lib("Mistulsa King") is None
+    assert lib("Law and Order SVU") is None
+
+
+def test_tmdb_two_language_name_needs_both_titles(importer, tmdb):
+    show = {"id": 153312, "name": "Tulsa King", "first_air_date": "2022-11-13"}
+    other = {"id": 7, "name": "King", "first_air_date": "2001-01-01"}
+
+    class SplitTMDB(FakeTMDB):
+        def search(self, kind, query, year=None):
+            self.searches.append((kind, query, year))
+            return [r for r in (show, other) if r["name"].lower() == query]
+
+    fake = SplitTMDB(tvdb="420")
+    fake.titles = {"153312": {"Tulsa King", "Král Tulsy"}, "7": {"King"}}
+    tmdb(fake)
+
+    assert importer._match_tmdb_two_titles("show", "Král Tulsy Tulsa King", None) == (
+        Match(kind="show", title="Tulsa King", tmdb_id="153312", tvdb_id="420")
     )
+    assert importer._match_tmdb_two_titles("show", "Burger King", None) is None
+    assert importer._match_tmdb_two_titles("show", "Tulsa King", None) is None
 
 
 def with_file(item, infohash):

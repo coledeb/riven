@@ -111,3 +111,47 @@ class TMDBApi:
         tvdb_id = response.json().get("tvdb_id")
 
         return str(tvdb_id) if tvdb_id else None
+
+    def find_id(self, kind: str, source: str, external_id: str) -> str | None:
+        """Return the TMDB id of a movie or show (`kind` "movie"/"tv") from an external id."""
+
+        response = self.session.get(
+            f"find/{external_id}", params={"external_source": source}
+        )
+
+        if not response.ok:
+            raise TMDBApiError(f"TMDB find failed with HTTP {response.status_code}")
+
+        results = response.json().get(f"{kind}_results") or []
+
+        return str(results[0]["id"]) if results else None
+
+    def get_titles(self, kind: str, tmdb_id: int | str) -> set[str]:
+        """Every title TMDB knows for a movie or show: original, alternative and translated."""
+
+        response = self.session.get(
+            f"{kind}/{tmdb_id}",
+            params={"append_to_response": "alternative_titles,translations"},
+        )
+
+        if not response.ok:
+            raise TMDBApiError(f"TMDB titles failed with HTTP {response.status_code}")
+
+        data = response.json()
+        alternatives = data.get("alternative_titles") or {}
+        translations = (data.get("translations") or {}).get("translations") or []
+
+        titles = [
+            data.get("title"),
+            data.get("name"),
+            data.get("original_title"),
+            data.get("original_name"),
+            *(t.get("title") for key in ("titles", "results") for t in alternatives.get(key) or []),
+            *(
+                (t.get("data") or {}).get(key)
+                for t in translations
+                for key in ("title", "name")
+            ),
+        ]
+
+        return {str(t) for t in titles if t}

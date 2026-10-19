@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -63,6 +64,29 @@ def _norm(title: str) -> str:
     """RTN's normalized title with runs of spaces collapsed ("vs. Acme")."""
 
     return " ".join(normalize_title(title).split())
+
+
+def _fold(title: str) -> str:
+    """Normalized title without accents, so "Kral" and "Král" compare equal."""
+
+    decomposed = unicodedata.normalize("NFKD", _norm(title))
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def _other_half(wanted: str, name: str) -> str | None:
+    """What's left of `wanted` when `name` starts or ends it on a word boundary."""
+
+    if wanted.startswith(name + " "):
+        return wanted[len(name) + 1 :]
+
+    if wanted.endswith(" " + name):
+        return wanted[: -len(name) - 1]
+
+    return None
+
+
+# Two-language names longer than this aren't split for TMDB (2 searches per split).
+MAX_SPLIT_WORDS = 8
 
 
 @dataclass
@@ -203,18 +227,21 @@ class TorBoxAccountImport:
         year = data.year or None
 
         # Library first (exact title or alias, then either half of "Title:
-        # Subtitle", then a title at either end of a two-language name), so
-        # swaps never create a second copy of a title
+        # Subtitle", then a two-language name), so swaps never create a second
+        # copy of a title. Errors are retried next check.
         match = self._match_library(kind, title, year, "exact")
 
         if match is None:
             match = self._match_library(kind, title, year, "halves")
 
         if match is None:
-            match = self._match_library(kind, title, year, "edges")
+            match = self._match_library(kind, title, year, "two_titles")
 
         if match is None:
-            match = self._match_tmdb(kind, title, year)  # errors are retried next check
+            match = self._match_tmdb(kind, title, year)
+
+            if isinstance(match, str):
+                match = self._match_tmdb_two_titles(kind, title, year) or match
 
         if isinstance(match, str):
             return self._unmatched(torrent, match)
@@ -227,14 +254,20 @@ class TorBoxAccountImport:
         kind: str,
         title: str,
         year: int | None,
-        mode: Literal["exact", "halves", "edges"],
+        mode: Literal["exact", "halves", "two_titles"],
     ) -> Match | str | None:
         wanted = _norm(title)
 
         with db_session() as session:
             rows = session.execute(
                 select(
-                    MediaItem.id, MediaItem.title, MediaItem.aired_at, MediaItem.aliases
+                    MediaItem.id,
+                    MediaItem.title,
+                    MediaItem.aired_at,
+                    MediaItem.aliases,
+                    MediaItem.tmdb_id,
+                    MediaItem.tvdb_id,
+                    MediaItem.imdb_id,
                 ).where(MediaItem.type == kind)
             ).all()
 
@@ -245,30 +278,23 @@ class TorBoxAccountImport:
             aliases = [a for values in (row.aliases or {}).values() for a in values]
             return {_norm(n) for n in [row.title, *aliases] if n}
 
-        def edge_words(row: Any) -> int:
-            """Words of the longest name that starts or ends the wanted title.
+        def is_two_titles(row: Any) -> bool:
+            """A name of the row at one end and another of its titles at the other."""
 
-            Dual-language names glue two titles together ("Král Tulsy  Tulsa
-            King"). Names under two words are skipped so "King" or "Lost" never
-            match by being part of a longer title.
-            """
+            own = names(row)
+            others = {o for n in own if (o := _other_half(wanted, n))}
 
-            longest = 0
+            if not others:
+                return False
 
-            for name in names(row):
-                count = len(name.split())
+            if {_fold(o) for o in others} & {_fold(n) for n in own}:
+                return True
 
-                if count >= 2 and (
-                    wanted.startswith(name + " ") or wanted.endswith(" " + name)
-                ):
-                    longest = max(longest, count)
+            known = self._tmdb_titles(kind, row)
+            return any(_fold(o) in known for o in others)
 
-            return longest
-
-        if mode == "edges":
-            scored = [(edge_words(r), r) for r in rows if r.title]
-            best = max((n for n, _ in scored), default=0)
-            hits = [r for n, r in scored if best and n == best]
+        if mode == "two_titles":
+            hits = [r for r in rows if r.title and is_two_titles(r)]
         else:
             hits = [r for r in rows if r.title and wanted in names(r)]
 
@@ -288,7 +314,52 @@ class TorBoxAccountImport:
 
         return None
 
-    def _match_tmdb(self, kind: str, title: str, year: int | None) -> Match | str:
+    def _tmdb_titles(self, kind: str, row: Any) -> set[str]:
+        """Folded titles TMDB knows for a library item (empty if it has no TMDB id)."""
+
+        tmdb = di[TMDBApi]
+        tmdb_kind = "movie" if kind == "movie" else "tv"
+        tmdb_id = row.tmdb_id
+
+        if not tmdb_id and kind == "show" and row.tvdb_id:
+            tmdb_id = tmdb.find_id(tmdb_kind, "tvdb_id", row.tvdb_id)
+
+        if not tmdb_id and row.imdb_id:
+            tmdb_id = tmdb.find_id(tmdb_kind, "imdb_id", row.imdb_id)
+
+        if not tmdb_id:
+            return set()
+
+        return {_fold(t) for t in tmdb.get_titles(tmdb_kind, tmdb_id)}
+
+    def _match_tmdb_two_titles(
+        self, kind: str, title: str, year: int | None
+    ) -> Match | None:
+        """Split a two-language name ("Král Tulsy Tulsa King") into two titles of one TMDB entry."""
+
+        words = _norm(title).split()
+
+        if not 2 <= len(words) <= MAX_SPLIT_WORDS:
+            return None
+
+        found = dict[str, Match]()
+
+        for i in range(1, len(words)):
+            left, right = " ".join(words[:i]), " ".join(words[i:])
+
+            for name, other in ((right, left), (left, right)):
+                match = self._match_tmdb(kind, name, year, other=other)
+
+                if isinstance(match, Match) and match.tmdb_id:
+                    found[match.tmdb_id] = match
+
+        return next(iter(found.values())) if len(found) == 1 else None
+
+    def _match_tmdb(
+        self, kind: str, title: str, year: int | None, other: str | None = None
+    ) -> Match | str:
+        """Match `title` exactly; with `other`, only entries that also have that title."""
+
         tmdb = di[TMDBApi]
         tmdb_kind = "movie" if kind == "movie" else "tv"
         wanted = _norm(title)
@@ -308,6 +379,14 @@ class TorBoxAccountImport:
             return int(date[:4]) if date[:4].isdigit() else None
 
         hits = [r for r in results if wanted in names(r)]
+
+        if other:
+            folded = _fold(other)
+            hits = [
+                r
+                for r in hits
+                if folded in {_fold(t) for t in tmdb.get_titles(tmdb_kind, r["id"])}
+            ]
 
         if year:
             near = [r for r in hits if (y := first_year(r)) and abs(y - year) <= 1]
