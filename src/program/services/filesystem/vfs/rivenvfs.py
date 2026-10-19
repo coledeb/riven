@@ -1579,6 +1579,18 @@ class RivenVFS(pyfuse3.Operations):
 
         return int(time.time() * 1e9)
 
+    @staticmethod
+    def _timestamp_ns(value: str) -> int:
+        """Convert a stored ISO timestamp to nanoseconds; naive values are UTC."""
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(value)
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return int(parsed.timestamp() * 1_000_000_000)
+
     def _invalidate_entry(
         self,
         parent_path: str,
@@ -1722,22 +1734,16 @@ class RivenVFS(pyfuse3.Operations):
 
             # Parse timestamps from cached metadata
             if node.created_at:
-                from datetime import datetime
-
                 try:
-                    created_dt = datetime.fromisoformat(node.created_at)
-                    created_ns = int(created_dt.timestamp() * 1_000_000_000)
+                    created_ns = self._timestamp_ns(node.created_at)
                 except Exception:
                     created_ns = self._current_time_ns()
             else:
                 created_ns = self._current_time_ns()
 
             if node.updated_at:
-                from datetime import datetime
-
                 try:
-                    updated_dt = datetime.fromisoformat(node.updated_at)
-                    updated_ns = int(updated_dt.timestamp() * 1_000_000_000)
+                    updated_ns = self._timestamp_ns(node.updated_at)
                 except Exception:
                     updated_ns = created_ns
             else:
