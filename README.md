@@ -66,6 +66,8 @@
 > - **Service names spelled right in settings.** Real-Debrid, Debrid-Link, AllDebrid, MediaFusion, RARBG.
 > - **Live progress shows the right service.** `event_update` and `/api/v1/events` list each job under the service running it.
 >
+> Multiple of these fixes came from (or were inspired by) upstream Riven [PRs](https://github.com/rivenmedia/riven/pulls).
+>
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
 Services currently supported:
