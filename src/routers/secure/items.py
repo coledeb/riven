@@ -709,7 +709,7 @@ async def retry_items(
 
                     session.commit()
 
-                    di[Program].em.add_event(Event("RetryItem", id))
+                    di[Program].em.requeue_event(Event("RetryItem", id))
             except ValueError as e:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
@@ -732,7 +732,7 @@ async def retry_library_items() -> RetryResponse:
     item_ids = db_functions.retry_library()
 
     for item_id in item_ids:
-        di[Program].em.add_event(
+        di[Program].em.requeue_event(
             Event(
                 emitted_by="RetryLibrary",
                 item_id=item_id,

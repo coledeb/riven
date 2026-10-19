@@ -1354,7 +1354,7 @@ async def auto_scrape(
             # Do NOT dispatch per-episode events here — they would race with the
             # season event and cause redundant per-episode scraping.
             for season in seasons_to_scrape:
-                di[Program].em.add_event(
+                di[Program].em.requeue_event(
                     Event(
                         "API",
                         season.id,
@@ -1367,7 +1367,7 @@ async def auto_scrape(
             )
 
         # Scrape entire item
-        di[Program].em.add_event(
+        di[Program].em.requeue_event(
             Event(
                 "API",
                 item.id,

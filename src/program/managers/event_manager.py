@@ -250,7 +250,7 @@ class EventManager:
             item (MediaItem): The event item to remove from the queue.
         """
 
-        for event in self._queued_events:
+        for event in list(self._queued_events):
             if event.item_id == item_id:
                 self.remove_event_from_queue(event)
 
@@ -274,7 +274,7 @@ class EventManager:
             item (MediaItem): The event item to remove from the running events.
         """
 
-        for event in self._running_events:
+        for event in list(self._running_events):
             if event.item_id == item_id:
                 self.remove_event_from_running(event)
 
@@ -483,6 +483,26 @@ class EventManager:
         """
 
         return any(event.item_id == _id for event in self._running_events)
+
+    def requeue_event(self, event: Event) -> bool:
+        """
+        Adds an event for a manual action, replacing queued events for the item and its children.
+
+        A queued event can be scheduled for later (e.g. a downloader cooldown), and add_event
+        would dedupe the new event against it. Running events are left alone.
+
+        Returns:
+            True if queued; False if deduped away.
+        """
+
+        if event.item_id:
+            with db_session() as session:
+                item_id, related_ids = db_functions.get_item_ids(session, event.item_id)
+
+            for queued_id in [item_id, *related_ids]:
+                self.remove_id_from_queue(queued_id)
+
+        return self.add_event(event)
 
     def add_event(self, event: Event) -> bool:
         """
