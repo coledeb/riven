@@ -56,6 +56,8 @@
 > - **Airing seasons get their released episodes.** After a season with unreleased episodes is scraped, its released episodes are scraped right away instead of waiting for the daily retry.
 > - **Seerr issues for stuck items (optional).** `content.overseerr.issues` opens a Seerr issue when a released movie or episode stays missing, and resolves it once it's available.
 > - **Slow sources get replaced (optional).** `stream.slow_replace`: when a file playing in Plex keeps timing out or downloads slower than it plays, Riven tries a fresh link, then stops playback with a message and swaps in another copy at the same path. Several slow files at once, or one still slow after moving to another server, is reported (Apprise) instead of acted on.
+> - **Calendar works.** `GET /api/v1/calendar` no longer fails with a 500 (`yield_per` combined with `unique()`).
+> - **Real stream errors reported.** A stream whose first connection fails now raises that error (rate limit, dead link...) instead of trio's `task_status.started()` RuntimeError, so the VFS returns the matching errno.
 >
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
