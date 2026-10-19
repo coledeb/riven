@@ -163,9 +163,9 @@ def monitor(monkeypatch):
     return monitor
 
 
-def stall_twice(monitor, key):
+def stall_twice(monitor, key, url="https://cdn1.example/x"):
     for _ in range(2):
-        monitor.health.record_stall(key, path=f"/{key}", file_size=1000 * MB, url="u")
+        monitor.health.record_stall(key, path=f"/{key}", file_size=1000 * MB, url=url)
 
 
 def test_slow_file_gets_a_fresh_link_then_a_replace_then_a_cooldown(monitor):
@@ -231,3 +231,18 @@ def test_two_episodes_of_one_pack_are_not_an_outage(monitor):
     monitor.check()
 
     assert sorted(monitor.calls) == [("fresh", "a.mkv"), ("fresh", "b.mkv")]
+
+
+def test_still_slow_on_another_server_only_notifies(monitor):
+    monitor.plex.playing = {"/a.mkv"}
+
+    stall_twice(monitor, "a.mkv")
+    monitor.check()
+    assert monitor.calls == [("fresh", "a.mkv")]
+
+    # The fresh link moved the stream to another server, and it's slow there too
+    stall_twice(monitor, "a.mkv", url="https://cdn2.example/x")
+    monitor.check()
+
+    assert [c[0] for c in monitor.calls] == ["fresh", "notify"]
+    assert "two different servers" in monitor.calls[1][1]

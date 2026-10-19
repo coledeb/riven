@@ -13,8 +13,9 @@ file first gets a fresh download link (TorBox may hand out another server). If
 it is still slow, its torrent is blacklisted for that movie or episode, Plex
 playback is stopped with a message and the item is re-sourced, keeping its
 path (the VFS hold/swap). When files from two or more different torrents are
-slow at once, the problem is probably the connection or the debrid service:
-nothing is replaced and the notify URLs are told.
+slow at once, or a file is still slow after its fresh link moved it to another
+server, the problem is probably the connection or the debrid service: nothing
+is replaced and the notify URLs are told.
 """
 
 from __future__ import annotations
@@ -224,7 +225,8 @@ class SlowStreamMonitor:
     def __init__(self, health: StreamHealth = stream_health, clock=time.monotonic):
         self.health = health
         self._clock = clock
-        self._refreshed = dict[str, float]()
+        # File -> (when a fresh link was tried, the slow server it replaced)
+        self._refreshed = dict[str, tuple[float, str]]()
         self._replaced = dict[int, float]()
         self._outage_notified = -OUTAGE_NOTIFY_SECONDS
 
@@ -303,6 +305,9 @@ class SlowStreamMonitor:
             "looks like a connection or debrid service problem, so nothing was "
             "replaced."
         )
+        self._connection_problem(message, now)
+
+    def _connection_problem(self, message: str, now: float) -> None:
         logger.warning(f"Slow streams: {message}")
 
         if now - self._outage_notified >= OUTAGE_NOTIFY_SECONDS:
@@ -312,12 +317,22 @@ class SlowStreamMonitor:
     def _handle(self, file: SlowFile, now: float) -> None:
         refreshed = self._refreshed.get(file.key)
 
-        if refreshed is None or now - refreshed > REFRESH_RETRY_SECONDS:
-            self._refreshed[file.key] = now
+        if refreshed is None or now - refreshed[0] > REFRESH_RETRY_SECONDS:
+            self._refreshed[file.key] = (now, file.stats.host)
             self.health.clear(file.key)
 
             if self._fresh_link(file):
                 return
+        elif file.stats.host and file.stats.host != refreshed[1]:
+            # Slow on the old server and on the new one: probably the connection
+            self.health.clear(file.key)
+            self._connection_problem(
+                f"{file.title} is slow on two different servers ({refreshed[1]}, "
+                f"then {file.stats.host}: {file.reason}). This looks like a "
+                "connection or debrid service problem, so nothing was replaced.",
+                now,
+            )
+            return
 
         if file.item_id is None:
             return
