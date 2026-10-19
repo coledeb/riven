@@ -722,6 +722,17 @@ class RivenVFS(pyfuse3.Operations):
 
         logger.debug(f"Holding VFS nodes for item {item.id} while re-sourcing: {paths}")
 
+    def video_paths(self, item: MediaItem) -> list[str]:
+        """VFS paths of the item's video file (e.g. /shows/Show/Season 01/x.mkv)."""
+
+        if not (entry := item.media_entry):
+            return []
+
+        return [
+            node.path
+            for node in self._get_nodes_by_original_filename(entry.original_filename)
+        ]
+
     def is_open(self, item: MediaItem) -> bool:
         """Whether the item's video file has an open file handle (e.g. being played)."""
 

@@ -5,9 +5,10 @@ Torrents added with another tool (for example Debrid Media Manager) are
 matched to a movie or show by name, first against Riven's library and then
 through a TMDB search. Their files fill movies and episodes that have no file
 yet. With ``replace_existing`` on they also replace the files Riven already
-has for what they contain (held in place in the VFS, so Plex sees the same
-file switch source; files being played are switched on a later check).
-Nothing is deleted.
+has for what they contain, even ones Riven blacklisted for them (held in
+place in the VFS, so Plex sees the same file switch source). Files being
+played are switched on a later check, or right after stopping the Plex
+playback with a message (``stop_playback_to_replace``). Nothing is deleted.
 
 When a torrent Riven uses disappears from the account, the items using it are
 reset, and another account torrent covering them is preferred over a new
@@ -22,6 +23,7 @@ sent to the configured Apprise URLs.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from dataclasses import dataclass
 from datetime import datetime
@@ -351,8 +353,9 @@ class TorBoxAccountImport:
                 return None
 
             vfs = self._program().services.filesystem.riven_vfs
+            playing = [t for t in targets if vfs and vfs.is_open(t)]
 
-            if vfs and any(vfs.is_open(t) for t in targets):
+            if playing and not self._stop_playback(playing):
                 logger.debug(
                     f"TorBox import: '{torrent.get('name')}' replaces a file that is "
                     "open; trying again on the next check"
@@ -378,6 +381,7 @@ class TorBoxAccountImport:
             downloader = self._program().services.downloader
 
             if targets:
+                self._unblacklist(targets, infohash)
                 self._clear_for_replace(session, targets)
                 logger.info(
                     f"TorBox import: replacing {len(targets)} file(s) of "
@@ -503,13 +507,11 @@ class TorBoxAccountImport:
 
         infohash = str(torrent.get("hash") or "").lower()
 
+        # A torrent the user added overrides Riven's blacklist (e.g. a pack that
+        # was on a dead CDN server and is wanted back now that it works again)
         def replaceable(i: Movie | Episode) -> bool:
             active = i.active_stream.infohash.lower() if i.active_stream else None
-            return (
-                bool(i.filesystem_entry)
-                and active != infohash
-                and not any(s.infohash == infohash for s in i.blacklisted_streams)
-            )
+            return bool(i.filesystem_entry) and active != infohash
 
         if isinstance(item, Movie):
             return [item] if replaceable(item) else []
@@ -536,6 +538,55 @@ class TorBoxAccountImport:
                     targets[episode.id] = episode
 
         return list(targets.values())
+
+    @staticmethod
+    def _unblacklist(targets: list[Movie | Episode], infohash: str) -> None:
+        for target in targets:
+            for stream in list(target.blacklisted_streams):
+                if stream.infohash.lower() == infohash:
+                    target.unblacklist_stream(stream)
+
+    def _stop_playback(self, playing: list[Movie | Episode]) -> bool:
+        """Stop Plex playback of these files; True if every one was stopped."""
+
+        if not self.settings.stop_playback_to_replace:
+            return False
+
+        from program.services.updaters.plex import PlexUpdater
+
+        services = self._program().services
+        vfs = services.filesystem.riven_vfs
+        plex = services.updater.services.get(PlexUpdater)
+
+        if not vfs or not plex or not plex.initialized:
+            return False
+
+        sessions = list[tuple[MediaItem, list[Any]]]()
+
+        for item in playing:
+            paths = [
+                os.path.join(services.updater.library_path, p.lstrip("/"))
+                for p in vfs.video_paths(item)
+            ]
+            found = plex.sessions_playing(paths)
+
+            # Open but not playing in Plex (a scan, another client): wait
+            if not found:
+                return False
+
+            sessions.append((item, found))
+
+        for item, found in sessions:
+            for session in found:
+                try:
+                    session.stop(reason=self.settings.stop_playback_message)
+                except Exception as e:
+                    logger.warning(f"TorBox import: couldn't stop Plex playback: {e}")
+                    return False
+
+            logger.info(f"TorBox import: stopped Plex playback of {item.log_string}")
+
+        return True
 
     def _clear_for_replace(
         self, session: Session, targets: list[Movie | Episode]

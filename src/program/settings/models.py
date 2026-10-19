@@ -85,10 +85,27 @@ class TorBoxImportModel(Observable):
         description=(
             "Also let a newly added account torrent replace the files Riven already "
             "has for the movie or episodes it contains (e.g. a better copy picked in "
-            "Debrid Media Manager). Files stay in place and switch to the new torrent; "
-            "an episode that is being played is switched after playback. The old "
+            "Debrid Media Manager), even one Riven had blacklisted for them. Files "
+            "stay in place and switch to the new torrent; one that is being played "
+            "is switched after playback (or see stop_playback_to_replace). The old "
             "torrent is left on the account."
         ),
+    )
+    stop_playback_to_replace: bool = Field(
+        default=False,
+        description=(
+            "With replace_existing: if the file being replaced is playing in Plex, "
+            "stop that playback with the message below and replace it right away, "
+            "instead of waiting until playback ends. Needs the Plex updater "
+            "(stopping playback needs Plex Pass)."
+        ),
+    )
+    stop_playback_message: str = Field(
+        default=(
+            "This video is being switched to a new copy. Press play again in a "
+            "moment to continue where you left off."
+        ),
+        description="Message Plex shows when playback is stopped for a replace",
     )
     interval: int = Field(
         default=120, ge=30, description="Seconds between TorBox account checks"

@@ -15,6 +15,7 @@ from program.media.stream import Stream
 from program.services.downloaders import torbox_import
 from program.services.downloaders.torbox import TorBoxNotFound
 from program.services.downloaders.torbox_import import Match, TorBoxAccountImport
+from program.services.updaters.plex import playing_sessions
 
 
 class FakeTMDB:
@@ -313,8 +314,11 @@ def test_replace_targets_are_episodes_with_a_file_from_another_torrent():
 
     dead = Stream.__mapper__.class_manager.new_instance()
     dead.infohash = "a" * 40
-    e1.blacklisted_streams.append(dead)  # this torrent failed for e1 before
-    assert targets(show, torrent) == []
+    e1.blacklisted_streams.append(dead)  # failed for e1 before (e.g. a dead server)
+    assert targets(show, torrent) == [e1]  # the user's add overrides that
+
+    TorBoxAccountImport._unblacklist([e1], "a" * 40)
+    assert e1.blacklisted_streams == []
 
 
 def test_replace_targets_only_episodes_in_the_torrent():
@@ -335,3 +339,21 @@ def test_replace_targets_movie():
 
     with_file(movie, "b" * 40)
     assert TorBoxAccountImport._replace_targets(movie, pack("Film.2020.mkv")) == [movie]
+
+
+def test_plex_sessions_matched_by_mapped_path():
+    def session(file):
+        part = SimpleNamespace(file=file)
+        return SimpleNamespace(media=[SimpleNamespace(parts=[part])])
+
+    playing = session(r"\\WSL-MEDIA\riven\shows\Show\Season 01\Show - s01e01.mkv")
+    other = session(r"\\wsl-media\riven\shows\Show\Season 01\Show - s01e02.mkv")
+    mappings = {"/mnt/debrid/riven": "\\\\wsl-media\\riven"}
+
+    found = playing_sessions(
+        [playing, other],
+        ["/mnt/debrid/riven/shows/Show/Season 01/Show - s01e01.mkv"],
+        mappings,
+    )
+
+    assert found == [playing]  # Windows paths compare case-insensitively

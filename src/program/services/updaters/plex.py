@@ -86,6 +86,35 @@ class PlexUpdater(BaseUpdater):
 
         return False
 
+    def sessions_playing(self, paths: list[str]) -> list:
+        """Plex sessions playing any of these Riven paths."""
+
+        if not self.api or not self.api.plex_server:
+            return []
+
+        return playing_sessions(
+            self.api.plex_server.sessions(), paths, self.settings.path_mappings
+        )
+
+
+def playing_sessions(sessions, paths: list[str], mappings: dict[str, str]) -> list:
+    """The Plex sessions whose file is one of these Riven paths (as Plex sees them)."""
+
+    def key(path: str) -> str:
+        return path.lower() if is_windows_path(path) else path
+
+    wanted = {key(map_path(path, mappings)) for path in paths}
+
+    return [
+        session
+        for session in sessions
+        if any(
+            key(part.file or "") in wanted
+            for media in session.media
+            for part in media.parts
+        )
+    ]
+
 
 def is_windows_path(path: str) -> bool:
     return path.startswith("\\\\") or re.match(r"^[A-Za-z]:[\\\\/]", path) is not None
