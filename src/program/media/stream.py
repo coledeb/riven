@@ -39,6 +39,7 @@ class BlacklistReason(StrEnum):
     NOT_CACHED = "not_cached"  # not cached on the debrid service when tried
     TORRENT_REMOVED = "torrent_removed"  # torrent or file gone from the account
     DOWNLOAD_ERROR = "download_error"  # any other download failure
+    DOWNLOAD_STALLED = "download_stalled"  # uncached download made no progress
     WRONG_FILES = "wrong_files"  # has no file for the item (permanent)
     MANUAL = "manual"  # blacklisted by the user (permanent)
     UNKNOWN = "unknown"  # permanent
@@ -50,6 +51,7 @@ _EXPIRY_SETTING = {
     BlacklistReason.NOT_CACHED: "not_cached_hours",
     BlacklistReason.TORRENT_REMOVED: "torrent_removed_hours",
     BlacklistReason.DOWNLOAD_ERROR: "download_error_hours",
+    BlacklistReason.DOWNLOAD_STALLED: "download_error_hours",
 }
 
 
@@ -110,6 +112,8 @@ class Stream(Base):
     rank: Mapped[int]
     lev_ratio: Mapped[float]
     resolution: Mapped[str | None]
+    # Reported by the scraper (Torrentio) at the last scrape; None = unknown
+    seeders: Mapped[int | None] = mapped_column(nullable=True, default=None)
     is_cached: bool = False
     parents: Mapped[list["MediaItem"]] = relationship(
         secondary="StreamRelation", back_populates="streams", lazy="selectin"
@@ -128,7 +132,8 @@ class Stream(Base):
         Index("ix_stream_resolution", "resolution"),
     )
 
-    def __init__(self, torrent: Torrent):
+    def __init__(self, torrent: Torrent, seeders: int | None = None):
+        self.seeders = seeders
         self.raw_title = torrent.raw_title
         self.infohash = torrent.infohash
         self.parsed_title = torrent.data.parsed_title
@@ -158,5 +163,6 @@ class Stream(Base):
             "rank": self.rank,
             "lev_ratio": self.lev_ratio,
             "resolution": self.resolution,
+            "seeders": self.seeders,
             "is_cached": self.is_cached,
         }

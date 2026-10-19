@@ -100,6 +100,12 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
             if stream not in item.streams and stream not in item.blacklisted_streams
         ]
 
+        # Keep seeder counts current on streams the item already has
+        for stream in item.streams:
+            found = sorted_streams.get(stream.infohash.lower())
+            if found and found.seeders is not None:
+                stream.seeders = found.seeders
+
         if new_streams:
             item.streams.extend(new_streams)
             item.updated = False

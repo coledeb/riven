@@ -20,6 +20,7 @@ from program.media.media_entry import MediaEntry
 from program.services.downloaders.models import (
     DebridFile,
     InvalidDebridFileException,
+    NotCachedException,
     TorrentContainer,
     TorrentFile,
     TorrentInfo,
@@ -39,6 +40,7 @@ from program.utils.request import (
 )
 
 from .shared import DownloaderBase, premium_days_left
+from .torbox_uncached import UncachedDownloads
 
 # TorBox documents 300 requests/min per API key. Stay under it so other
 # clients sharing the key (e.g. a mount) keep some headroom.
@@ -167,7 +169,8 @@ class TorBoxDownloader(DownloaderBase):
 
     Notes:
     - Only cached torrents are added (checkcached first, then createtorrent
-      with add_only_if_cached), so nothing is ever downloaded from peers.
+      with add_only_if_cached), unless ``uncached`` is enabled: then, as a
+      last resort, an uncached torrent may be downloaded (torbox_uncached.py).
     - TorBox keeps one entry per hash per account: adding a hash that is
       already there returns the existing torrent. Such torrents may belong to
       other tools sharing the account, so by default Riven only deletes
@@ -199,6 +202,7 @@ class TorBoxDownloader(DownloaderBase):
         )
 
         self.initialized = self.validate()
+        self.uncached = UncachedDownloads(self)
 
     def validate(self) -> bool:
         """
@@ -426,6 +430,8 @@ class TorBoxDownloader(DownloaderBase):
         self,
         infohash: str,
         item_type: ProcessedItemType,
+        raise_not_cached: bool = False,
+        skip_cache_check: bool = False,
         **_: Any,
     ) -> TorrentContainer | None:
         """
@@ -433,16 +439,23 @@ class TorBoxDownloader(DownloaderBase):
 
         Riven's download step reuses the torrent id from the container, so a
         cached torrent is added here, like the other providers do.
+
+        raise_not_cached: raise NotCachedException instead of returning None
+            when TorBox doesn't have it cached.
+        skip_cache_check: the torrent just finished downloading on the
+            account; use it without asking checkcached.
         """
 
         infohash = infohash.lower()
         torrent_id: str | None = None
 
-        try:
-            if not self._is_cached(infohash):
-                logger.debug(f"Torrent {infohash} is not cached on TorBox")
-                return None
+        if not skip_cache_check and not self._is_cached(infohash):
+            logger.debug(f"Torrent {infohash} is not cached on TorBox")
+            if raise_not_cached:
+                raise NotCachedException(f"{infohash} is not cached on TorBox")
+            return None
 
+        try:
             torrent_id = self.add_torrent(infohash)
             container, reason, info = self._process_torrent(
                 torrent_id, infohash, item_type
@@ -513,9 +526,11 @@ class TorBoxDownloader(DownloaderBase):
 
         return TorrentContainer(infohash=infohash, files=files), None, info
 
-    def add_torrent(self, infohash: str) -> str:
+    def add_torrent(self, infohash: str, only_if_cached: bool = True) -> str:
         """
         Add a cached torrent by infohash, or reuse the account's existing one.
+
+        only_if_cached=False lets TorBox download an uncached torrent.
 
         Returns:
             TorBox torrent id.
@@ -541,7 +556,7 @@ class TorBoxDownloader(DownloaderBase):
             kind="add",
             data={
                 "magnet": f"magnet:?xt=urn:btih:{infohash}",
-                "add_only_if_cached": "true",
+                "add_only_if_cached": "true" if only_if_cached else "false",
             },
         )
 
@@ -732,6 +747,8 @@ class TorBoxDownloader(DownloaderBase):
             for tid in list(self._unused_since):
                 if tid not in self._created or tid in used:
                     del self._unused_since[tid]
+
+            used = used | self.uncached.torrent_ids()
 
             for tid in set(self._created) - used:
                 since = self._unused_since.setdefault(tid, now)

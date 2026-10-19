@@ -36,6 +36,7 @@ from .realdebrid import RealDebridDownloader
 from .debridlink import DebridLinkDownloader
 from .alldebrid import AllDebridDownloader
 from .torbox import TorBoxDownloader
+from .torbox_uncached import Check, UncachedDownloads
 
 
 class Downloader(Runner[None, DownloaderBase]):
@@ -115,13 +116,53 @@ class Downloader(Runner[None, DownloaderBase]):
         hit_circuit_breaker = False
         unexpected_error = False
 
+        # Uncached TorBox downloads (last resort): see torbox_uncached.py
+        uncached = self._uncached_downloads(available_services)
+        finished_infohash: str | None = None
+
+        if uncached:
+            try:
+                check = uncached.check(item)
+            except CircuitBreakerOpen:
+                check = None
+
+            if check and check.state == "wait":
+                yield RunnerResult(media_items=[item], run_at=check.run_at)
+                return
+
+            if check and check.state == "failed":
+                stream = next(
+                    (s for s in item.streams if s.infohash.lower() == check.infohash),
+                    None,
+                )
+                if stream:
+                    item.blacklist_stream(stream, BlacklistReason.DOWNLOAD_STALLED)
+
+            if check and check.state == "done":
+                finished_infohash = check.infohash
+                uncached.forget(item.id, finished_infohash)
+
         try:
             # Sort streams by resolution and rank (highest first) using simple, fast sorting
             sorted_streams = sort_streams_by_quality(item.streams)
 
+            # A just-finished uncached download goes first
+            if finished_infohash:
+                sorted_streams.sort(
+                    key=lambda s: s.infohash.lower() != finished_infohash
+                )
+
+            # Streams TorBox recently said aren't cached wait for the uncached step
+            known_not_cached = uncached.not_cached(item.id) if uncached else set()
+
             tried_streams = 0
 
             for stream in sorted_streams:
+                if stream.infohash.lower() in known_not_cached:
+                    continue
+
+                # Kept for an uncached download instead of being blacklisted
+                held_for_uncached = False
                 # Try each available service for this stream before blacklisting
                 stream_failed_on_all_services = True
                 stream_hit_circuit_breaker = False
@@ -140,6 +181,12 @@ class Downloader(Runner[None, DownloaderBase]):
                             stream,
                             item,
                             service,
+                            raise_not_cached=uncached is not None
+                            and service is uncached.torbox,
+                            skip_cache_check=service is getattr(
+                                uncached, "torbox", None
+                            )
+                            and stream.infohash.lower() == finished_infohash,
                         )
 
                         if not container:
@@ -197,6 +244,10 @@ class Downloader(Runner[None, DownloaderBase]):
                             failure_reason = BlacklistReason.WRONG_FILES
                         elif isinstance(e, NotCachedException):
                             failure_reason = BlacklistReason.NOT_CACHED
+
+                            if uncached and uncached.eligible(stream):
+                                uncached.remember_not_cached(item.id, stream.infohash)
+                                held_for_uncached = True
                         else:
                             failure_reason = BlacklistReason.DOWNLOAD_ERROR
 
@@ -238,7 +289,7 @@ class Downloader(Runner[None, DownloaderBase]):
 
                 # Only blacklist if stream genuinely failed on ALL available services
                 # Don't blacklist if we hit circuit breaker in single-provider mode
-                if stream_failed_on_all_services:
+                if stream_failed_on_all_services and not held_for_uncached:
                     if (
                         stream_hit_circuit_breaker
                         and len(self.initialized_services) == 1
@@ -262,6 +313,20 @@ class Downloader(Runner[None, DownloaderBase]):
             logger.error(
                 f"Unexpected error in downloader for {item.log_string} ({item.id}): {e}"
             )
+
+        if not download_success and uncached and not unexpected_error:
+            try:
+                started = self._start_uncached(item, uncached, sorted_streams)
+            except CircuitBreakerOpen:
+                started = None
+                hit_circuit_breaker = True
+                self._service_cooldowns[uncached.torbox.key] = (
+                    datetime.now() + timedelta(minutes=1)
+                )
+
+            if started:
+                yield RunnerResult(media_items=[item], run_at=started.run_at)
+                return
 
         if not download_success:
             # Check if we hit circuit breaker in single-provider mode
@@ -290,7 +355,47 @@ class Downloader(Runner[None, DownloaderBase]):
             # Clear service cooldowns on successful download
             self._service_cooldowns.clear()
 
+            if uncached:
+                uncached.forget(item.id)
+
             yield RunnerResult(media_items=[item])
+
+    @staticmethod
+    def _uncached_downloads(
+        services: list[DownloaderBase],
+    ) -> "UncachedDownloads | None":
+        """The TorBox uncached-download helper, if that's enabled."""
+
+        for service in services:
+            uncached = getattr(service, "uncached", None)
+
+            if isinstance(service, TorBoxDownloader) and uncached and uncached.enabled:
+                return uncached
+
+        return None
+
+    def _start_uncached(
+        self,
+        item: MediaItem,
+        uncached: "UncachedDownloads",
+        sorted_streams: list[Stream],
+    ) -> "Check | None":
+        """Start the best uncached candidate; a "wait" Check if one started or no slot is free."""
+
+        for stream in uncached.candidates(item, sorted_streams):
+            if stream not in item.streams:
+                continue
+
+            check = uncached.start(item, stream)
+
+            if check:
+                return check
+
+            # TorBox refused the add; don't try this one again for a while
+            uncached.forget(item.id, stream.infohash)
+            item.blacklist_stream(stream, BlacklistReason.DOWNLOAD_ERROR)
+
+        return None
 
     def validate_stream(
         self,
@@ -312,6 +417,7 @@ class Downloader(Runner[None, DownloaderBase]):
         item: MediaItem,
         service: "DownloaderBase",
         greedy: bool = True,
+        **availability_options: bool,
     ) -> TorrentContainer | None:
         """
         Validate a single stream on a specific service by ensuring its files match the item's requirements.
@@ -327,7 +433,11 @@ class Downloader(Runner[None, DownloaderBase]):
         if service.key == "realdebrid":
             container: TorrentContainer | None = service.get_instant_availability(stream.infohash, item.type, greedy=greedy)
         else:
-            container: TorrentContainer | None = service.get_instant_availability(stream.infohash, item.type)
+            container: TorrentContainer | None = service.get_instant_availability(
+                stream.infohash,
+                item.type,
+                **{k: v for k, v in availability_options.items() if v},
+            )
 
         if not container:
             logger.debug(

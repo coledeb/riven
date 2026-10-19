@@ -26,7 +26,8 @@
 >
 > It was written with TorBox's rate limits in mind, aiming to be a respectful API client that stays well inside them rather than leaning on retries:
 >
-> - **Cached-only adds.** Hashes are checked with `checkcached` and added with `add_only_if_cached`, so nothing downloads from peers or wastes the hourly add limit.
+> - **Cached-only adds.** Hashes are checked with `checkcached` and added with `add_only_if_cached`, so nothing downloads from peers or wastes the hourly add limit (unless uncached downloads are turned on, below).
+> - **Uncached downloads as a last resort (optional).** With `uncached.enabled`, when no cached torrent passes the ranking and file rules, TorBox downloads the best-seeded one (tiers 25+/10+/5+ from Torrentio's counts, then quality), only while a plan slot is free (`active_download_slots` 3/5/10); stalled downloads are dropped for the next candidate, and starts are reported via Apprise with the seeder count.
 > - **Paced requests.** API calls are paced at 240/min (limit 300) and download-link requests at 15/min, leaving room for other tools on the key.
 > - **Back off on 429s.** Rate-limited requests wait out TorBox's `Retry-After` instead of retrying in a loop.
 > - **Few link requests.** Links are resolved only when a file is opened, then reused.

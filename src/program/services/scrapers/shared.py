@@ -14,6 +14,7 @@ from typing import cast
 
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.stream import Stream
+from program.services.scrapers import seeders
 from program.services.scrapers.anime_audio import with_anime_audio_bonus
 from program.settings import settings_manager
 from program.settings.models import RTNSettingsModel, ScraperModel
@@ -254,7 +255,7 @@ def parse_results(
         )
 
         torrent_stream_map = {
-            torrent.infohash.lower(): Stream(torrent)
+            torrent.infohash.lower(): Stream(torrent, seeders.get(torrent.infohash))
             for torrent in sorted_torrents.values()
         }
 

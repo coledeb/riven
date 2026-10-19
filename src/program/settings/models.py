@@ -119,6 +119,56 @@ class TorBoxImportModel(Observable):
     )
 
 
+class TorBoxUncachedModel(Observable):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "When no cached torrent passes your ranking and file rules, let TorBox "
+            "download an uncached one from peers. The best-seeded one is picked "
+            "(see seeder tiers), then the best quality within that tier. The item "
+            "waits until TorBox finishes. Seeder counts come from Torrentio."
+        ),
+    )
+    seeder_tiers: list[int] = Field(
+        default_factory=lambda: [25, 10, 5],
+        description=(
+            "Seeder thresholds, most preferred first: any torrent in the first "
+            "tier beats every torrent in the next. The lowest is the minimum; "
+            "torrents with fewer (or unknown) seeders are never downloaded."
+        ),
+    )
+    stall_minutes: int = Field(
+        default=60,
+        ge=10,
+        description=(
+            "Give up on a download that made no progress for this long: it is "
+            "deleted, blacklisted for the item, and the next candidate is tried"
+        ),
+    )
+    check_minutes: int = Field(
+        default=5,
+        ge=1,
+        description="Minutes between progress checks while an item waits for its download",
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Apprise URLs (e.g. a Discord webhook) told when an uncached download "
+            "starts (with its reported seeders) or is given up"
+        ),
+    )
+
+    @field_validator("seeder_tiers")
+    @classmethod
+    def _sort_tiers(cls, tiers: list[int]) -> list[int]:
+        tiers = sorted({t for t in tiers if t > 0}, reverse=True)
+
+        if not tiers:
+            raise ValueError("seeder_tiers needs at least one value above 0")
+
+        return tiers
+
+
 class TorBoxModel(Observable):
     enabled: bool = Field(default=False, description="Enable TorBox")
     api_key: str = Field(default="", description="TorBox API key")
@@ -147,6 +197,18 @@ class TorBoxModel(Observable):
     account_import: TorBoxImportModel = Field(
         default_factory=lambda: TorBoxImportModel(),
         description="Import torrents added to the TorBox account outside Riven",
+    )
+    active_download_slots: Literal[3, 5, 10] = Field(
+        default=3,
+        description=(
+            "How many torrents your TorBox plan downloads at once (Essential 3, "
+            "Standard 5, Pro 10). Riven only starts an uncached download while "
+            "the account has a free slot."
+        ),
+    )
+    uncached: TorBoxUncachedModel = Field(
+        default_factory=lambda: TorBoxUncachedModel(),
+        description="Download torrents TorBox doesn't have cached, as a last resort",
     )
 
 
