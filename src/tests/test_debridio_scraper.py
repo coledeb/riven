@@ -257,6 +257,39 @@ def test_correct_names_are_left_alone():
     )
 
 
+
+def test_uploader_tag_is_removed_so_rtn_keeps_the_release():
+    name = "Reasonable.Doubt.2022.S03E08.1080p.WEB.h264-ETHEL[EZTVx.to].mkv"
+    title = torrent_title(name, files(name))
+
+    assert title == "Reasonable.Doubt.2022.S03E08.1080p.WEB.h264-ETHEL.mkv"
+    assert parse(name).site and not parse(title).site
+    assert torrent_title("Show.S01E01.720p-GRP [eztv.re]", []) == "Show.S01E01.720p-GRP"
+
+
+def test_other_brackets_are_left_alone():
+    for name in (
+        "Show S01E01 1080p WEB-DL [Dual Audio].mkv",
+        "Show S01E01 [1080p] [x265].mkv",
+        "Show.S01E01.H.264-[GRP].mkv",
+    ):
+        assert torrent_title(name, []) == name
+
+
+def test_debridio_titles_never_replace_another_scrapers_title():
+    from program.services.scrapers import merge_results
+
+    torrentio = {PACK: "Show S01E01 1080p WEB h264-ETHEL"}
+    tagged = {PACK: "Show.S01E01.1080p.WEB.h264-ETHEL[EZTVx.to].mkv", SINGLE: "Other"}
+
+    first = dict(torrentio)
+    merge_results(first, "debridio", tagged)
+    second = {}
+    merge_results(second, "debridio", tagged)
+    merge_results(second, "torrentio", torrentio)
+
+    assert first == second == {PACK: torrentio[PACK], SINGLE: "Other"}
+
 def test_language_flags_become_words_riven_can_filter():
     title = "Movie.2000.1080p.mkv\n⚡ 📦 📺 1080p 💾 1.5 GB  \n🌐 Multi Audio|🇫🇷|🇲🇽"
     assert language_tags(title) == "MULTI FRENCH LATINO"

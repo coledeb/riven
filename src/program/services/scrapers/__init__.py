@@ -27,6 +27,24 @@ from program.settings import settings_manager
 from program.settings.models import Observable, ScraperModel
 
 
+
+# Debridio's titles are TorBox file names (uploader tags, no pack names), so
+# another scraper's title for the same torrent is kept.
+FALLBACK_TITLE_SCRAPERS = {"debridio"}
+
+
+def merge_results(
+    results: dict[str, str], service_key: str, service_results: dict[str, str]
+) -> None:
+    """Add one scraper's {infohash: title} results, keeping better titles."""
+
+    if service_key in FALLBACK_TITLE_SCRAPERS:
+        for infohash, title in service_results.items():
+            results.setdefault(infohash, title)
+    else:
+        results.update(service_results)
+
+
 class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
     def __init__(self):
         super().__init__()
@@ -139,7 +157,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
             with results_lock:
                 try:
-                    results.update(service_results)
+                    merge_results(results, svc.key, service_results)
                 except Exception as e:
                     logger.exception(
                         f"Error updating results for {svc.__class__.__name__}: {e}"
@@ -233,7 +251,7 @@ class Scraping(Runner[ScraperModel, ScraperService[Observable]]):
 
                     if raw_results:
                         with results_lock:
-                            all_raw_results.update(raw_results)
+                            merge_results(all_raw_results, service_name, raw_results)
 
                         parsed_streams = parse_results(
                             item,

@@ -40,6 +40,13 @@ SEASON_IN_PATH = re.compile(
     r"\bS(\d{1,2})[ ._-]?E\d{1,4}\b|\bSeason[ ._-]?(\d{1,2})\b", re.IGNORECASE
 )
 VIDEO_EXTENSIONS = (".mkv", ".mp4", ".avi", ".m4v", ".ts", ".wmv", ".mov")
+# Uploader tag TorBox keeps at the end of single-file names, e.g.
+# `Show.S03E08.1080p.WEB.h264-ETHEL[EZTVx.to].mkv`. RTN reads it as a site
+# and drops the release when `extras.site` is off.
+UPLOADER_TAG = re.compile(
+    r"\s*\[(?:www\.)?[\w-]+(?:\.[\w-]+)*\.[a-z]{2,6}\](?=(?:\.\w{2,4})?$)",
+    re.IGNORECASE,
+)
 
 
 class DebridioScrapeResponse(BaseModel):
@@ -70,9 +77,11 @@ def torrent_title(name: str, files: list[dict[str, Any]]) -> str:
     TorBox sometimes names a multi-episode torrent after one of its files
     (e.g. `Show.S05E01.Title.1080p.mkv` for a 153-file series pack). Riven
     would then treat the pack as a single episode, so the episode token is
-    replaced with the season range found in the file list.
+    replaced with the season range found in the file list. A trailing
+    uploader tag like `[EZTVx.to]` is removed.
     """
 
+    name = UPLOADER_TAG.sub("", name)
     videos = [
         f.get("name", "")
         for f in files
