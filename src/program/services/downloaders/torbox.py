@@ -617,8 +617,8 @@ class TorBoxDownloader(DownloaderBase):
 
         With ``only_manage_own_torrents`` on (the default), torrents that were
         already on the account are left alone: other tools sharing the account
-        may still be using them. With it off, those are deleted too, unless
-        Riven's library still links to them.
+        may still be using them. With it off, those are deleted too. A torrent
+        Riven's library still links to is never deleted.
 
         Raises:
             TorBoxError: If the API returns a failing status.
@@ -629,18 +629,20 @@ class TorBoxDownloader(DownloaderBase):
         with self._lock:
             created = torrent_id in self._created
 
-        if not created:
-            if self.settings.only_manage_own_torrents:
-                logger.debug(
-                    f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
-                )
-                return
+        if not created and self.settings.only_manage_own_torrents:
+            logger.debug(
+                f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
+            )
+            return
 
-            if self._torrent_in_use(torrent_id):
-                logger.debug(
-                    f"Leaving TorBox torrent {torrent_id} in place: Riven's library still uses it"
-                )
-                return
+        # Also for torrents Riven created: a season pack is tried by several
+        # episodes at once, and one episode failing on it must not delete the
+        # pack another episode has just linked to.
+        if self._torrent_in_use(torrent_id):
+            logger.debug(
+                f"Leaving TorBox torrent {torrent_id} in place: Riven's library still uses it"
+            )
+            return
 
         response, body = self._request(
             "POST",

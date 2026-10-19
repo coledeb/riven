@@ -248,12 +248,36 @@ def test_existing_torrent_is_reused_and_never_deleted(downloader, fake):
     assert existing_id in fake.torrents
 
 
-def test_created_torrent_without_usable_files_is_removed(downloader, fake):
+def test_created_torrent_without_usable_files_is_removed(downloader, fake, monkeypatch):
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: False)
     fake.cached[CACHED] = [
         {"id": 0, "name": "Show/readme.txt", "short_name": "readme.txt", "size": 10}
     ]
 
     assert downloader.get_instant_availability(CACHED, "show") is None
+    assert fake.count("torrents/controltorrent") == 1
+    assert fake.torrents == {}
+
+
+def test_created_torrent_in_use_is_kept(downloader, fake, monkeypatch):
+    # A season pack Riven added: one episode fails on it while another uses it
+    fake.cached[CACHED] = episode_files()
+    container = downloader.get_instant_availability(CACHED, "show")
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: True)
+
+    downloader.delete_torrent(container.torrent_id)
+
+    assert fake.count("torrents/controltorrent") == 0
+    assert int(container.torrent_id) in fake.torrents
+
+
+def test_created_torrent_not_in_use_is_deleted(downloader, fake, monkeypatch):
+    fake.cached[CACHED] = episode_files()
+    container = downloader.get_instant_availability(CACHED, "show")
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: False)
+
+    downloader.delete_torrent(container.torrent_id)
+
     assert fake.count("torrents/controltorrent") == 1
     assert fake.torrents == {}
 
