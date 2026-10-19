@@ -3,8 +3,7 @@ Uncached TorBox downloads, as a last resort.
 
 When no cached torrent works for an item, the downloader can ask TorBox to
 download an uncached one from peers (``downloaders.torbox.uncached``). The
-pick: the highest seeder tier that has a candidate, then the best quality
-within it. While TorBox downloads, the item waits and is checked every
+pick: the best resolution, then the highest seeder tier within it, then rank. While TorBox downloads, the item waits and is checked every
 ``check_minutes``; once finished, the torrent is cached and handled like any
 other. A download with no progress for ``stall_minutes`` is deleted and its
 torrent blacklisted for the item, so the next candidate gets a turn.
@@ -165,9 +164,11 @@ class UncachedDownloads:
         """
         Not-cached streams worth downloading, best first.
 
-        `streams` is in quality order; a higher seeder tier always wins, and
-        quality decides within a tier.
+        `streams` is in quality order. Resolution comes first; within a
+        resolution the higher seeder tier wins, then the rest of the order.
         """
+
+        from program.services.downloaders.shared import get_resolution
 
         tiers = self.settings.seeder_tiers
         seen = self.not_cached(item.id)
@@ -177,7 +178,10 @@ class UncachedDownloads:
 
         pool = [s for s in streams if s.infohash.lower() in seen and self.eligible(s)]
 
-        return sorted(pool, key=lambda s: (tier(s), streams.index(s)))
+        return sorted(
+            pool,
+            key=lambda s: (-get_resolution(s).value, tier(s), streams.index(s)),
+        )
 
     # --- running downloads ---
 

@@ -163,18 +163,19 @@ def test_seeder_counts_are_remembered_per_hash():
 # --- choosing a candidate ---
 
 
-def test_candidates_prefer_seeder_tier_then_quality(tb):
-    uhd_few = stream("1" * 40, 12, "2160p")
-    hd_many = stream("2" * 40, 30, "1080p")
-    hd_ok = stream("3" * 40, 26, "720p")
-    too_few = stream("4" * 40, 4, "2160p")
-    unknown = stream("5" * 40, None, "2160p")
-    ordered = [too_few, unknown, uhd_few, hd_many, hd_ok]  # quality order
+def test_candidates_prefer_quality_then_seeder_tier(tb):
+    uhd_few = stream("1" * 40, 6, "2160p")
+    hd_ok = stream("2" * 40, 12, "1080p", rank=200)
+    hd_many = stream("3" * 40, 30, "1080p", rank=100)
+    sd_many = stream("4" * 40, 90, "720p")
+    too_few = stream("5" * 40, 4, "2160p")
+    unknown = stream("6" * 40, None, "2160p")
+    ordered = [too_few, unknown, uhd_few, hd_ok, hd_many, sd_many]  # quality order
     item = movie(ordered)
     for s in ordered:
         tb.uncached.remember_not_cached(item.id, s.infohash)
 
-    assert tb.uncached.candidates(item, ordered) == [hd_many, hd_ok, uhd_few]
+    assert tb.uncached.candidates(item, ordered) == [uhd_few, hd_many, hd_ok, sd_many]
 
 
 # --- downloader flow ---
