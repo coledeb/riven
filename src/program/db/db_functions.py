@@ -277,7 +277,7 @@ def create_calendar(session: Session | None = None) -> dict[int, dict[str, Any]]
             .where(MediaItem.aired_at.is_not(None))
             .where(MediaItem.aired_at >= datetime.now() - timedelta(days=30))
             .execution_options(stream_results=True)
-        ).unique()
+        )
 
         calendar = dict[int, dict[str, Any]]()
 
