@@ -23,3 +23,14 @@ def test_schema_titles_and_lists():
     order = defs["ScraperModel"]["properties"]["anime_audio_order"]
     assert order["items"]["readOnly"] is True
     assert order["x-ui-options"] == {"addable": False, "removable": False}
+
+
+def test_service_names_use_their_own_spelling():
+    defs = polish_settings_schema(AppModel.model_json_schema())["$defs"]
+    downloaders = defs["DownloadersModel"]["properties"]
+    scrapers = defs["ScraperModel"]["properties"]
+    assert downloaders["real_debrid"]["title"] == "Real-Debrid"
+    assert downloaders["debrid_link"]["title"] == "Debrid-Link"
+    assert downloaders["all_debrid"]["title"] == "AllDebrid"
+    assert scrapers["mediafusion"]["title"] == "MediaFusion"
+    assert scrapers["rarbg"]["title"] == "RARBG"
