@@ -1192,6 +1192,54 @@ class PauseResponse(MessageResponse):
     ]
 
 
+class PausePayload(IdListPayload):
+    remove_files: bool = Field(
+        default=False,
+        description="Also remove the items' files (no blacklisting); works on completed items too",
+    )
+
+
+def _pause_and_remove_files(session: Session, media_item: MediaItem) -> None:
+    """Remove an item's files without blacklisting its torrents, then pause it."""
+
+    updater = di[Program].services.updater
+    episodes = (
+        [e for s in media_item.seasons for e in s.episodes]
+        if isinstance(media_item, Show)
+        else media_item.episodes
+        if isinstance(media_item, Season)
+        else [media_item]
+    )
+    refresh_paths = set[str]()
+
+    if updater and updater.initialized:
+        for entry in (e.media_entry for e in episodes if e.media_entry):
+            for vfs_path in entry.get_all_vfs_paths():
+                abs_path = os.path.join(updater.library_path, vfs_path.lstrip("/"))
+                levels = 2 if isinstance(media_item, Movie) else 3
+
+                for _ in range(levels):
+                    abs_path = os.path.dirname(abs_path)
+
+                refresh_paths.add(abs_path)
+
+    media_item.reset()
+    media_item.store_state(States.Paused)
+
+    if isinstance(media_item, Episode):
+        MediaItem.store_state(media_item.parent)
+        MediaItem.store_state(media_item.parent.parent)
+    elif isinstance(media_item, Season):
+        MediaItem.store_state(media_item.parent)
+
+    session.commit()
+
+    for refresh_path in refresh_paths:
+        updater.refresh_path(refresh_path)
+
+    logger.info(f"Paused {media_item.log_string} and removed its files")
+
+
 @router.post(
     "/pause",
     summary="Pause Media Items",
@@ -1201,7 +1249,7 @@ class PauseResponse(MessageResponse):
 )
 async def pause_items(
     payload: Annotated[
-        IdListPayload,
+        PausePayload,
         Body(description="Pause items payload"),
     ],
 ) -> PauseResponse:
@@ -1229,6 +1277,10 @@ async def pause_items(
                     for id in all_ids:
                         di[Program].em.cancel_job(id)
                         di[Program].em.remove_id_from_queues(id)
+
+                    if payload.remove_files:
+                        _pause_and_remove_files(session, media_item)
+                        continue
 
                     if media_item.last_state not in [
                         States.Paused,

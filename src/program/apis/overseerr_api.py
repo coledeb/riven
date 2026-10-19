@@ -93,7 +93,21 @@ class OverseerrAPI:
 
             from schemas.overseerr import UserUserIdRequestsGet200Response
 
-            response_data = UserUserIdRequestsGet200Response.from_dict(response.json())
+            raw = response.json()
+            response_data = UserUserIdRequestsGet200Response.from_dict(raw)
+
+            # The generated model drops the request type and seasons
+            is_tv = {
+                r.get("id"): r.get("type") == "tv" for r in raw.get("results") or []
+            }
+            requested_seasons = {
+                r.get("id"): {
+                    s["seasonNumber"]
+                    for s in r.get("seasons") or []
+                    if isinstance(s.get("seasonNumber"), int)
+                }
+                for r in raw.get("results") or []
+            }
 
             assert response_data
 
@@ -114,24 +128,42 @@ class OverseerrAPI:
             pending_items = [
                 item
                 for item in response_data.results
-                if item.status == 2 and item.media and item.media.status == 3
+                if item.status == 2
+                and item.media
+                # 4 = partially available: a request for more seasons of a show
+                and (item.media.status == 3 or (is_tv.get(item.id) and item.media.status == 4))
             ]
 
         media_items: list[MediaItem] = []
+        shows = dict[str, MediaItem]()
 
         for item in pending_items:
             tmdb_id = item.media and item.media.tmdb_id
             tvdb_id = item.media and item.media.tvdb_id
 
             if tvdb_id is not None:
-                media_items.append(
-                    MediaItem(
-                        {
-                            "tvdb_id": tvdb_id,
-                            "requested_by": service_key,
-                        }
-                    )
+                seasons = requested_seasons.get(item.id) or set()
+
+                # Several requests for one show: one item, seasons merged
+                if show := shows.get(str(tvdb_id)):
+                    if show.requested_seasons is not None:
+                        show.requested_seasons = (
+                            show.requested_seasons | seasons if seasons else None
+                        )
+
+                    continue
+
+                show = MediaItem(
+                    {
+                        "tvdb_id": tvdb_id,
+                        "requested_by": service_key,
+                    }
                 )
+                # Not stored: only used when the show is first indexed and
+                # to resume seasons of a show already in the library
+                show.requested_seasons = seasons or None
+                shows[str(tvdb_id)] = show
+                media_items.append(show)
 
                 continue
 

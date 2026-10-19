@@ -118,6 +118,8 @@ class MediaItem(MappedAsDataclass, Base, kw_only=True):
     updated: Mapped[bool | None] = mapped_column(sqlalchemy.Boolean, default=False)
     guid: Mapped[str | None]
     overseerr_id: Mapped[int | None]
+    # Seasons asked for in Overseerr (None = all); set on content items only, not stored
+    requested_seasons = None
     last_state: Mapped[States | None] = mapped_column(
         sqlalchemy.Enum(States), default=States.Unknown
     )
@@ -924,10 +926,13 @@ class Show(MediaItem):
             if all(season.state == States.Paused for season in self.seasons):
                 return States.Paused
 
-            if all(season.state == States.Failed for season in self.seasons):
+            # Paused seasons (e.g. not requested) don't hold the show back
+            seasons = [s for s in self.seasons if s.state != States.Paused]
+
+            if all(season.state == States.Failed for season in seasons):
                 return States.Failed
 
-            if all(season.state == States.Completed for season in self.seasons):
+            if all(season.state == States.Completed for season in seasons):
                 # Check TVDB status - only mark as Completed if the show has ended
                 # If status is "Continuing" or "Upcoming", the show is still ongoing
                 if self.tvdb_status and self.tvdb_status.lower() in [
@@ -940,32 +945,32 @@ class Show(MediaItem):
 
             if any(
                 season.state in [States.Ongoing, States.Unreleased]
-                for season in self.seasons
+                for season in seasons
             ):
                 return States.Ongoing
 
             if any(
                 season.state in (States.Completed, States.PartiallyCompleted)
-                for season in self.seasons
+                for season in seasons
             ):
                 return States.PartiallyCompleted
 
-            if any(season.state == States.Symlinked for season in self.seasons):
+            if any(season.state == States.Symlinked for season in seasons):
                 return States.Symlinked
 
-            if any(season.state == States.Downloaded for season in self.seasons):
+            if any(season.state == States.Downloaded for season in seasons):
                 return States.Downloaded
 
             if self.is_scraped():
                 return States.Scraped
 
-            if any(season.state == States.Indexed for season in self.seasons):
+            if any(season.state == States.Indexed for season in seasons):
                 return States.Indexed
 
-            if all(not season.is_released for season in self.seasons):
+            if all(not season.is_released for season in seasons):
                 return States.Unreleased
 
-            if any(season.state == States.Requested for season in self.seasons):
+            if any(season.state == States.Requested for season in seasons):
                 return States.Requested
 
             return States.Unknown

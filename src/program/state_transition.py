@@ -95,9 +95,19 @@ def process_event(
             isinstance(existing_item, Episode) and existing_item.scraped_at is None
         )
 
-        if (emitted_by != services.scraping or never_scraped_episode) and (
-            overrides is not None
-            or services.scraping.should_submit(existing_item)
+        # A show with paused seasons is scraped per season, so a whole-show
+        # pack can't fill the paused ones
+        has_paused_seasons = isinstance(existing_item, Show) and any(
+            s.last_state == States.Paused for s in existing_item.seasons
+        )
+
+        if (
+            (emitted_by != services.scraping or never_scraped_episode)
+            and not has_paused_seasons
+            and (
+                overrides is not None
+                or services.scraping.should_submit(existing_item)
+            )
         ):
             items_to_submit = [existing_item]
         elif isinstance(existing_item, Show):

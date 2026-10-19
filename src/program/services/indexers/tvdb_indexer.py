@@ -9,6 +9,7 @@ from loguru import logger
 from program.apis.tvdb_api import SeriesRelease, TVDBApi
 from program.apis.trakt_api import TraktAPI
 from program.media.item import Episode, MediaItem, Season, Show
+from program.media.state import States
 from program.services.indexers.base import BaseIndexer
 from program.core.runner import MediaItemGenerator, RunnerResult
 from schemas.tvdb import SeasonExtendedRecord, EpisodeBaseRecord
@@ -49,6 +50,7 @@ class TVDBIndexer(BaseIndexer):
             if indexed_item := self._create_show_from_id(item.imdb_id, item.tvdb_id):
                 indexed_item = self.copy_items(item, indexed_item)
                 indexed_item.indexed_at = datetime.now()
+                self._pause_unrequested_seasons(indexed_item, item.requested_seasons)
 
                 if log_msg:
                     logger.debug(
@@ -81,6 +83,30 @@ class TVDBIndexer(BaseIndexer):
         )
 
         return
+
+    @staticmethod
+    def _pause_unrequested_seasons(show: Show, requested: set[int] | None) -> None:
+        """Pause the seasons a request didn't ask for (e.g. Overseerr seasons 11-13)."""
+
+        if not requested:
+            return
+
+        paused = [s for s in show.seasons if s.number not in requested]
+
+        if len(paused) == len(show.seasons):
+            logger.warning(
+                f"None of the requested seasons {sorted(requested)} exist for {show.log_string}; requesting all"
+            )
+            return
+
+        for season in paused:
+            season.store_state(States.Paused)
+
+        if paused:
+            logger.info(
+                f"Requested seasons {sorted(requested)} of {show.log_string}; "
+                f"paused {', '.join(str(s.number) for s in paused)}"
+            )
 
     def _update_show_metadata(self, show: Show) -> bool:
         """Update an existing Show object with fresh TVDB metadata.
