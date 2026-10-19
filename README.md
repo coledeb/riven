@@ -58,6 +58,12 @@
 > - **Slow sources get replaced (optional).** `stream.slow_replace`: when a file playing in Plex keeps timing out or downloads slower than it plays, Riven tries a fresh link, then stops playback with a message and swaps in another copy at the same path. Several slow files at once, or one still slow after moving to another server, is reported (Apprise) instead of acted on.
 > - **Calendar works.** `GET /api/v1/calendar` no longer fails with a 500 (`yield_per` combined with `unique()`).
 > - **Real stream errors reported.** A stream whose first connection fails now raises that error (rate limit, dead link...) instead of trio's `task_status.started()` RuntimeError, so the VFS returns the matching errno.
+> - **Episodes only take torrents from their season.** Scraping S15E12 no longer accepts S13E12 torrents that then fail to download.
+> - **Plex doesn't re-check every folder.** VFS folders keep their modified time until a file is added or removed, instead of always looking just changed.
+> - **File times are correct.** VFS file times are read as UTC, so they're no longer hours in the future.
+> - **Manual retry and scrape always run.** Retry, Retry Library and auto-scrape replace events queued for later (such as a downloader cooldown) instead of being ignored.
+> - **Missing items return 404.** `GET /api/v1/items/<id>` answers 404 for an unknown item instead of 500.
+> - **Service names spelled right in settings.** Real-Debrid, Debrid-Link, AllDebrid, MediaFusion, RARBG.
 >
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
