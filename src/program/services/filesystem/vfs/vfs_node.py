@@ -1,7 +1,8 @@
 from functools import cached_property
+import time
 import pyfuse3
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -51,7 +52,10 @@ class VFSDirectory(VFSNode):
 
     Attributes:
         parent: Reference to parent VFSDirectory
+        modified_ns: When a child was last added or removed (the directory's mtime)
     """
+
+    modified_ns: int = field(default_factory=time.time_ns)
 
     @property
     def children(self) -> dict[str, VFSNode]:
@@ -67,6 +71,7 @@ class VFSDirectory(VFSNode):
 
         child.parent = self
         self.children[child.name] = child
+        self.modified_ns = time.time_ns()
 
     def remove_child(self, name: str) -> VFSNode | None:
         """Remove and return a child node by name."""
@@ -74,6 +79,7 @@ class VFSDirectory(VFSNode):
 
         if child:
             child.parent = None
+            self.modified_ns = time.time_ns()
 
         return child
 

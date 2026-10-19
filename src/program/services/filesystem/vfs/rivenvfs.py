@@ -1685,11 +1685,11 @@ class RivenVFS(pyfuse3.Operations):
                 attrs.st_mode = pyfuse3.ModeT(stat.S_IFDIR | 0o755)
                 attrs.st_nlink = 2
                 attrs.st_size = 0
-                # Use current time for root directory
-                now_ns = self._current_time_ns()
-                attrs.st_atime_ns = now_ns
-                attrs.st_mtime_ns = now_ns
-                attrs.st_ctime_ns = now_ns
+                # Root changes only when a top-level directory is added or removed
+                modified_ns = self._root.modified_ns
+                attrs.st_atime_ns = modified_ns
+                attrs.st_mtime_ns = modified_ns
+                attrs.st_ctime_ns = modified_ns
                 return attrs
 
             # For other paths, get node from tree
@@ -1703,10 +1703,12 @@ class RivenVFS(pyfuse3.Operations):
                 attrs.st_mode = pyfuse3.ModeT(stat.S_IFDIR | 0o755)
                 attrs.st_nlink = 2
                 attrs.st_size = 0
-                now_ns = self._current_time_ns()
-                attrs.st_atime_ns = now_ns
-                attrs.st_mtime_ns = now_ns
-                attrs.st_ctime_ns = now_ns
+                # Not the current time: a directory that always looks just modified
+                # makes Plex re-check it on every visit.
+                modified_ns = node.modified_ns
+                attrs.st_atime_ns = modified_ns
+                attrs.st_mtime_ns = modified_ns
+                attrs.st_ctime_ns = modified_ns
                 return attrs
 
             # It's a file - use cached metadata from node (NO DATABASE QUERY!)
