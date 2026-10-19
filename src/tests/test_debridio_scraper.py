@@ -1,11 +1,13 @@
 import base64
 import json
+import threading
 
 import httpx
 import pytest
 from RTN import parse
 
 from program.media.item import Movie
+from program.services.downloaders import torbox
 from program.services.scrapers import debridio
 from program.services.scrapers.debridio import (
     Debridio,
@@ -92,6 +94,7 @@ def api(monkeypatch):
             self._client = httpx.Client(transport=httpx.MockTransport(api.handler))
 
     monkeypatch.setattr(debridio, "SmartSession", FakeSession)
+    monkeypatch.setattr(torbox, "SmartSession", FakeSession)
 
     settings = settings_manager.settings.scraping.debridio
     monkeypatch.setattr(settings, "enabled", True)
@@ -104,10 +107,28 @@ def api(monkeypatch):
 
 
 @pytest.fixture
-def scraper(api):  # noqa: ARG001 - installs the fake API first
+def downloader(api):  # noqa: ARG001 - installs the fake API first
+    """A running TorBox downloader without the startup account checks."""
+
+    downloader = torbox.TorBoxDownloader.__new__(torbox.TorBoxDownloader)
+    downloader.key = "torbox"
+    downloader.api = torbox.TorBoxAPI("torbox-key")
+    downloader._lock = threading.Lock()
+    downloader._paused_until = {}
+    downloader.initialized = True
+    return downloader
+
+
+@pytest.fixture
+def scraper(downloader, monkeypatch):
+    monkeypatch.setattr(Debridio, "_torbox", staticmethod(lambda: downloader))
     scraper = Debridio()
     assert scraper.initialized
     return scraper
+
+
+def torbox_calls(api):
+    return sum(1 for r in api.calls if r.url.host == "api.torbox.app")
 
 
 def movie():
@@ -146,7 +167,37 @@ def test_falls_back_to_debridio_titles_when_torbox_is_throttled(scraper, api):
     assert results[UNCACHED] == "Movie.2000.720p.mkv"
     assert len(results) == 3
     # One TorBox call only: no inline sleep/retry on the 429.
-    assert sum(1 for r in api.calls if r.url.host == "api.torbox.app") == 1
+    assert torbox_calls(api) == 1
+
+    # The 429 paused the shared downloader, so the next scrape skips TorBox.
+    assert len(scraper.scrape(movie())) == 3
+    assert torbox_calls(api) == 1
+
+
+def test_downloader_pause_also_pauses_debridio(scraper, api, downloader):
+    downloader._paused_until["api"] = float("inf")
+
+    results = scraper.scrape(movie())
+
+    assert len(results) == 3
+    assert torbox_calls(api) == 0
+
+
+def test_checks_use_the_downloader_session(scraper, api):
+    scraper.scrape(movie())
+
+    (call,) = [r for r in api.calls if r.url.host == "api.torbox.app"]
+    assert call.headers["Authorization"] == "Bearer torbox-key"
+    assert call.url.path == "/v1/api/torrents/checkcached"
+
+
+def test_without_torbox_downloader_debridio_titles_are_used(api, monkeypatch):
+    monkeypatch.setattr(Debridio, "_torbox", staticmethod(lambda: None))
+
+    results = Debridio().scrape(movie())
+
+    assert len(results) == 3
+    assert torbox_calls(api) == 0
 
 
 def test_large_answers_are_capped_and_batched(scraper, api, monkeypatch):

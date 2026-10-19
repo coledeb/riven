@@ -4,13 +4,18 @@ Debridio's Stremio addon returns playback URLs instead of infohashes, and its
 titles are file names, so a season pack looks like a single episode. The hash
 is a path segment of every URL; real torrent names come from TorBox's free
 `checkcached` endpoint, which also drops anything TorBox has not cached.
+Those calls go through the TorBox downloader, so both share one rate limit
+and one 429 pause.
 """
+
+from __future__ import annotations
 
 import base64
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from kink import di
 from loguru import logger
 from pydantic import BaseModel
 
@@ -19,9 +24,11 @@ from program.services.scrapers.base import ScraperService
 from program.services.scrapers.languages import flag_languages, with_languages
 from program.settings import settings_manager
 from program.settings.models import DebridioConfig
-from program.utils.request import SmartSession
+from program.utils.request import CircuitBreakerOpen, SmartSession
 
-TORBOX_URL = "https://api.torbox.app/v1/api"
+if TYPE_CHECKING:
+    from program.services.downloaders.torbox import TorBoxDownloader
+
 CHECKCACHED_BATCH = 100
 # Most results are kept, but a huge movie answer (600+ streams) should not
 # cost more than a few TorBox calls.
@@ -115,13 +122,6 @@ class Debridio(ScraperService[DebridioConfig]):
             ),
             retries=self.settings.retries,
             backoff_factor=0.3,
-        )
-        # retries=0: a TorBox 429 carries Retry-After: 300, which SmartSession
-        # would sleep out inline. Fall back to Debridio's titles instead.
-        # 60/min leaves most of TorBox's 300/min for the downloader.
-        self.torbox_session = SmartSession(
-            rate_limits={"api.torbox.app": {"rate": 60 / 60, "capacity": 10}},
-            retries=0,
         )
         self.headers = {"User-Agent": "Mozilla/5.0"}
         self.proxies = (
@@ -271,8 +271,39 @@ class Debridio(ScraperService[DebridioConfig]):
 
         return torrents
 
+    @staticmethod
+    def _torbox() -> TorBoxDownloader | None:
+        """The running TorBox downloader, if any."""
+
+        from program.program import Program  # noqa: PLC0415 - circular import
+
+        services = di[Program].services
+
+        if not services:
+            return None
+
+        return next(
+            (
+                s
+                for s in services.downloader.services.values()
+                if s.key == "torbox" and s.initialized
+            ),
+            None,
+        )
+
     def _torbox_cached(self, hashes: list[str]) -> dict[str, dict[str, Any]] | None:
-        """TorBox entries for the cached hashes, or None if TorBox can't answer."""
+        """TorBox entries for the cached hashes, or None if TorBox can't answer.
+
+        Uses the downloader's session and 429 pause, so Debridio and the
+        downloader stay under one TorBox rate limit together, and a 429 seen
+        by either pauses both.
+        """
+
+        torbox = self._torbox()
+
+        if torbox is None:
+            logger.debug("TorBox downloader not running; using Debridio's titles")
+            return None
 
         cached = dict[str, dict[str, Any]]()
 
@@ -280,30 +311,30 @@ class Debridio(ScraperService[DebridioConfig]):
             batch = hashes[start : start + CHECKCACHED_BATCH]
 
             try:
-                response = self.torbox_session.get(
-                    f"{TORBOX_URL}/torrents/checkcached",
+                response, body = torbox._request(
+                    "GET",
+                    "torrents/checkcached",
                     params={
                         "hash": ",".join(batch),
                         "format": "object",
                         "list_files": "true",
                     },
-                    headers={
-                        **self.headers,
-                        "Authorization": f"Bearer {self.torbox_key}",
-                    },
                     timeout=self.timeout,
-                    proxies=self.proxies,
                 )
+            except CircuitBreakerOpen:
+                # Throttled now or still paused: fall back rather than stall
+                # the scrape. The downloader already logged the 429.
+                logger.debug("TorBox checkcached paused; using Debridio's titles")
+                return None
             except Exception as e:
                 logger.warning(f"TorBox checkcached failed: {type(e).__name__}")
                 return None
 
             if not response.ok:
-                # 429 included: fall back rather than stall the scrape.
                 logger.warning(f"TorBox checkcached returned {response.status_code}")
                 return None
 
-            for infohash, entry in (response.json().get("data") or {}).items():
+            for infohash, entry in (body.get("data") or {}).items():
                 cached[infohash.lower()] = entry or {}
 
         return cached
