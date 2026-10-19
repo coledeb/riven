@@ -41,6 +41,7 @@ class FutureWithEvent:
     future: Future[int | tuple[int, datetime] | None]
     event: Event | None
     cancellation_event: threading.Event
+    service_name: str = ""
 
 
 class EventType(Enum):
@@ -333,6 +334,7 @@ class EventManager:
             future=future,
             event=event,
             cancellation_event=cancellation_event,
+            service_name=service.__class__.__name__,
         )
 
         self._futures.append(future_with_event)
@@ -601,30 +603,27 @@ class EventManager:
         Get the event updates for the SSE manager.
 
         Returns:
-            dict[str, list[int]]: A dictionary with the event types as keys and a list of item IDs as values.
+            dict[str, list[int]]: The service running each job as keys and a list of item IDs as values.
         """
 
-        events = [future.event for future in self._futures if future.event]
-        event_types = [
-            "Scraping",
-            "Downloader",
-            "Symlinker",
-            "Updater",
-            "PostProcessing",
-        ]
+        # Keyed by the service doing the work, not the one that emitted the event
+        # (a download emitted by Scraping is still a download).
+        event_types = {
+            "IndexerService": "Indexer",
+            "Scraping": "Scraping",
+            "Downloader": "Downloader",
+            "FilesystemService": "Filesystem",
+            "Updater": "Updater",
+            "PostProcessing": "PostProcessing",
+        }
 
-        updates = {event_type: list[int]() for event_type in event_types}
+        updates = {event_type: list[int]() for event_type in event_types.values()}
 
-        for event in events:
-            if isinstance(event.emitted_by, str):
-                key = event.emitted_by
-            else:
-                key = event.emitted_by.__class__.__name__
+        for future in self._futures:
+            event_type = event_types.get(future.service_name)
 
-            table = updates.get(key, None)
-
-            if table is not None and event.item_id:
-                table.append(event.item_id)
+            if event_type and future.event and future.event.item_id:
+                updates[event_type].append(future.event.item_id)
 
         return updates
 
