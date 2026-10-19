@@ -112,6 +112,9 @@ class MediaStream:
         self.nursery = nursery
         self.provider = provider
         self.recent_reads: RecentReads = RecentReads()
+        # Body reads waiting for chunks; bumped counter wakes the stream loop.
+        self._waiting_reads: list[ChunkRange] = []
+        self._waiting_reads_changed: trio_util.AsyncValue[int] = trio_util.AsyncValue(0)
         self.is_streaming: trio_util.AsyncBool = trio_util.AsyncBool(False)
         self.is_killed: trio_util.AsyncBool = trio_util.AsyncBool(False)
         self._stream_error: trio_util.AsyncValue[Exception | None] = (
@@ -431,87 +434,59 @@ class MediaStream:
                                                 )
 
                                 if seek_range:
-                                    await _process_chunks(seek_range.uncached_chunks)
+                                    seek_chunks = seek_range.uncached_chunks
+
+                                    if (
+                                        len(seek_chunks) > 0
+                                        and seek_chunks[0].start
+                                        == connection.current_read_position
+                                    ):
+                                        await _process_chunks(seek_chunks)
+
                                     seek_range = None
 
-                                async for (
-                                    read
-                                ) in self.recent_reads.current_read.eventual_values(
-                                    lambda v: (
-                                        v is not None and v.read_type == "body_read"
-                                    )
-                                ):
-                                    if not read:
-                                        raise ValueError(
-                                            self.build_log_message("No read available")
+                                # Serve every body read that is waiting, lowest chunk first.
+                                # Samba and kernel readahead keep several reads in flight on
+                                # one file handle; each must get its chunks fetched, not only
+                                # the newest one.
+                                while True:
+                                    chunk_range = self._next_waiting_range()
+
+                                    if chunk_range is None:
+                                        seen = self._waiting_reads_changed.value
+
+                                        await self._waiting_reads_changed.wait_value(
+                                            lambda v, seen=seen: v != seen
                                         )
 
-                                    uncached_chunks = read.chunk_range.uncached_chunks
-
-                                    if len(uncached_chunks) == 0:
                                         continue
 
+                                    uncached_chunks = chunk_range.uncached_chunks
+
+                                    if (
+                                        uncached_chunks[0].start
+                                        == connection.current_read_position
+                                    ):
+                                        await _process_chunks(uncached_chunks)
+
+                                        continue
+
+                                    # Streams only read forwards and can't skip data,
+                                    # so any other position needs a new connection.
                                     if self.enable_tracing:
                                         logger.log(
                                             "STREAM",
                                             self.build_log_message(
-                                                f"Received read event: {read} with uncached_chunks {uncached_chunks}"
+                                                f"Next waiting chunk {uncached_chunks[0].start} "
+                                                f"is not at read position {connection.current_read_position} "
+                                                f"for {self.file_metadata.path}. "
+                                                f"Seeking to {uncached_chunks[0].start}/{self.file_metadata.file_size}."
                                             ),
                                         )
 
-                                    request_start, _ = read.chunk_range.request_range
+                                    connection.seek(chunk_range=chunk_range)
 
-                                    if (
-                                        self.config.header_size
-                                        < uncached_chunks[0].start
-                                        < connection.start_position
-                                    ):
-                                        # Backward seek detection:
-                                        #
-                                        # If the requested start is before the start of the stream, we will always need to seek.
-                                        # This is because streams can only read forwards, so a new connection must be made.
-
-                                        if self.enable_tracing:
-                                            logger.log(
-                                                "STREAM",
-                                                self.build_log_message(
-                                                    f"Requested start {request_start} "
-                                                    f"is before current read position {connection.current_read_position} "
-                                                    f"for {self.file_metadata.path}. "
-                                                    f"Seeking to new start position {uncached_chunks[0].start}/{self.file_metadata.file_size}."
-                                                ),
-                                            )
-
-                                        connection.seek(chunk_range=read.chunk_range)
-
-                                        break
-
-                                    if (
-                                        connection.current_read_position
-                                        < uncached_chunks[0].start
-                                    ):
-                                        # Forward seek detection:
-                                        #
-                                        # If the requested start is after the current read position, we need to seek forward.
-                                        # This is because streams cannot skip chunks of data, so a new connection must be made,
-                                        # to avoid requesting data that will be discarded and using unnecessary bandwidth.
-
-                                        if self.enable_tracing:
-                                            logger.log(
-                                                "STREAM",
-                                                self.build_log_message(
-                                                    f"Request chunk start {uncached_chunks[0].start} "
-                                                    f"is after current read position {connection.current_read_position} "
-                                                    f"for {self.file_metadata.path}. "
-                                                    f"Seeking to new start position {uncached_chunks[0].start}/{self.file_metadata.file_size}."
-                                                ),
-                                            )
-
-                                        connection.seek(chunk_range=read.chunk_range)
-
-                                        break
-
-                                    await _process_chunks(uncached_chunks)
+                                    break
 
                             position = connection.current_read_position
                             seek_range = connection.seek_range
@@ -782,7 +757,13 @@ class MediaStream:
 
         start, end = chunk_range.request_range
 
-        await self._wait_until_chunks_ready(chunk_range=chunk_range)
+        self._waiting_reads.append(chunk_range)
+        self._waiting_reads_changed.value += 1
+
+        try:
+            await self._wait_until_chunks_ready(chunk_range=chunk_range)
+        finally:
+            self._waiting_reads.remove(chunk_range)
 
         if self.enable_tracing:
             logger.log(
@@ -1149,6 +1130,24 @@ class MediaStream:
                 )
 
             return verified_data
+
+    def _next_waiting_range(self) -> ChunkRange | None:
+        """The waiting read whose first uncached chunk comes earliest in the file."""
+
+        best: ChunkRange | None = None
+        best_start = 0
+
+        for chunk_range in self._waiting_reads:
+            uncached_chunks = chunk_range.uncached_chunks
+
+            if len(uncached_chunks) == 0:
+                continue
+
+            if best is None or uncached_chunks[0].start < best_start:
+                best = chunk_range
+                best_start = uncached_chunks[0].start
+
+        return best
 
     async def _wait_until_chunks_ready(
         self,

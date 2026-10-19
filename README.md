@@ -63,6 +63,7 @@
 > - **Blacklists expire for temporary problems.** Each blacklisted torrent records why: a pulled CDN server, a slow source or a torrent removed from the account comes back after 24 h, not cached or other download errors after 72 h, and wrong files or manual blacklists never come back. A repeat doubles the time, and after `max_strikes` it's permanent (`scraping.blacklist`). Works with every debrid service; only the pulled-server check is TorBox-specific.
 > - **Failed downloads are remembered.** When every candidate torrent fails, their blacklist entries are now saved and the item moves on to re-scraping, instead of retrying the same torrents.
 > - **Calendar works.** `GET /api/v1/calendar` no longer returns 500.
+> - **Overlapping reads don't stall playback.** Samba and kernel readahead keep several reads in flight on one file; each now gets its chunks fetched (lowest first) instead of only the newest, which left the others waiting 30 s and erroring.
 > - **Real stream errors reported.** A failed first connection raises its real error, so the VFS returns the matching errno.
 > - **Episodes only take torrents from their season.** S15E12 no longer accepts S13E12 torrents.
 > - **Plex doesn't re-check every folder.** VFS folders keep their modified time until their contents change.
