@@ -107,6 +107,11 @@ class ProgramScheduler:
                 "interval": overseerr.issues.interval
             }
 
+        # Replace sources too slow to play (checks the setting itself, so it can be toggled live)
+        from program.services.streaming.slow_streams import slow_stream_monitor
+
+        scheduled_functions[slow_stream_monitor] = {"interval": 15}
+
         # Add scheduler processing and monitoring
         scheduled_functions[self._process_scheduled_tasks] = {"interval": 60}
         scheduled_functions[self._monitor_ongoing_schedules] = {"interval": 15 * 60}

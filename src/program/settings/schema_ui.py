@@ -62,6 +62,7 @@ _PROPERTY_TITLES = {
     "plex_watchlist": "Plex Watchlist",
     "ranking": "Ranking",
     "scraping": "Scraping",
+    "slow_replace": "Slow Stream Replace",
     "web": "WEB",
 }
 

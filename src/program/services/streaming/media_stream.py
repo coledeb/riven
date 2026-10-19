@@ -39,6 +39,7 @@ from .exceptions import (
 from .file_metadata import FileMetadata
 from .recent_reads import Read, RecentReads
 from .session_statistics import SessionStatistics
+from .slow_streams import stream_health
 from .stream_connection import StreamConnection
 
 
@@ -120,6 +121,7 @@ class MediaStream:
 
         # Store initial URL to avoid redundant unrestrict calls
         self.target_url: trio_util.AsyncValue[str] = trio_util.AsyncValue(initial_url)
+        self._pushed_url: str | None = None
 
         self.config = Config(
             chunk_size=stream_settings.chunk_size_mb * 1024 * 1024,
@@ -366,6 +368,10 @@ class MediaStream:
                                         for chunk in chunks:
                                             chunk_label = f"[{chunk.start}-{chunk.end}]"
 
+                                            self._switch_to_pushed_url()
+
+                                            fetch_started = trio.current_time()
+
                                             with benchmark(
                                                 log=lambda duration, c=chunk: (
                                                     logger.log(
@@ -379,6 +385,16 @@ class MediaStream:
                                                 )
                                             ):
                                                 data = await anext(connection.reader)
+
+                                            stream_health.record_chunk(
+                                                self.file_metadata.original_filename,
+                                                path=self.file_metadata.path,
+                                                file_size=self.file_metadata.file_size,
+                                                url=self.target_url.value,
+                                                size=len(data),
+                                                seconds=trio.current_time()
+                                                - fetch_started,
+                                            )
 
                                             if data == b"":
                                                 raise EmptyDataException(
@@ -1143,6 +1159,13 @@ class MediaStream:
                 )
         except* trio.TooSlowError:
             if len(chunk_range.uncached_chunks) > 0:
+                stream_health.record_stall(
+                    self.file_metadata.original_filename,
+                    path=self.file_metadata.path,
+                    file_size=self.file_metadata.file_size,
+                    url=self.target_url.value,
+                )
+
                 raise ChunksTooSlowException(
                     threshold=self.config.chunk_wait_timeout_seconds,
                     chunks=chunk_range.uncached_chunks,
@@ -1190,6 +1213,21 @@ class MediaStream:
             start=start,
             data=data,
         )
+
+    def _switch_to_pushed_url(self) -> None:
+        """Use a fresh link the slow-stream check picked for this file."""
+
+        url = stream_health.pushed_url(self.file_metadata.original_filename)
+
+        # Only once per pushed link: the stream may refresh it later on its own
+        if not url or url == self._pushed_url:
+            return
+
+        self._pushed_url = url
+
+        if url != self.target_url.value:
+            logger.debug(self.build_log_message("Switching to a fresh download link"))
+            self.target_url.value = url
 
     async def _refresh_download_url(self) -> bool:
         """

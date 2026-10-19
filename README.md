@@ -55,6 +55,7 @@
 > - **Playback survives a rate-limited CDN.** A `429` from the streaming server pauses every connection to that server (its `Retry-After`, else 2/4/8 s) instead of retrying within a second from several connections at once, which kept it rate limited until reads failed and players treated the file as ended.
 > - **Airing seasons get their released episodes.** After a season with unreleased episodes is scraped, its released episodes are scraped right away instead of waiting for the daily retry.
 > - **Seerr issues for stuck items (optional).** `content.overseerr.issues` opens a Seerr issue when a released movie or episode stays missing, and resolves it once it's available.
+> - **Slow sources get replaced (optional).** `stream.slow_replace`: when a file playing in Plex keeps timing out or downloads slower than it plays, Riven tries a fresh link, then stops playback with a message and swaps in another copy at the same path. Several slow files at once is reported (Apprise) instead of acted on.
 >
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 

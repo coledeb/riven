@@ -1147,6 +1147,64 @@ class LoggingModel(Observable):
         return v
 
 
+class SlowStreamModel(Observable):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Replace a file whose source is too slow to play. When a file Plex is "
+            "playing keeps timing out or downloads slower than it plays, Riven "
+            "first tries a fresh download link; if it is still slow, it blacklists "
+            "that torrent for the item, stops the Plex playback with the message "
+            "below and finds another copy (same path in Plex). Several files from "
+            "different torrents slow at once is treated as a connection or debrid "
+            "problem: nothing is replaced, the notify URLs are told."
+        ),
+    )
+    min_speed_ratio: float = Field(
+        default=1.2,
+        ge=1.0,
+        description=(
+            "A file is slow when it downloads at less than this many times its "
+            "bitrate (file size / duration in Plex)"
+        ),
+    )
+    slow_seconds: int = Field(
+        default=60,
+        ge=15,
+        description="How long a file must download that slowly before it counts",
+    )
+    stall_count: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "A file is also slow after this many reads that timed out "
+            "(chunk_wait_timeout_seconds) within stall_window_seconds"
+        ),
+    )
+    stall_window_seconds: int = Field(
+        default=300, ge=30, description="Window for stall_count, in seconds"
+    )
+    cooldown_hours: int = Field(
+        default=6,
+        ge=1,
+        description="Replace the same movie or episode at most once in this many hours",
+    )
+    stop_playback_message: str = Field(
+        default=(
+            "This video's source is too slow, so it is being switched to a faster "
+            "copy. Press play again in a minute or two to continue where you left off."
+        ),
+        description="Message Plex shows when playback is stopped for a replace",
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Apprise URLs (e.g. a Discord webhook) told about each replace, and "
+            "when several files are slow at once"
+        ),
+    )
+
+
 class StreamModel(Observable):
     chunk_size_mb: int = Field(
         default=1,
@@ -1167,6 +1225,10 @@ class StreamModel(Observable):
         default=60,
         ge=1,
         description="Timeout in seconds before a stream is considered inactive during resource cleanup (60 seconds default)",
+    )
+    slow_replace: SlowStreamModel = Field(
+        default_factory=lambda: SlowStreamModel(),
+        description="Replace sources too slow to play",
     )
 
 
