@@ -78,7 +78,7 @@ Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readm
 
 > [!NOTE]
 > For DUMB stack users, you will need to change your config for both Riven's Frontend and Backend like so:
-> - **Riven Frontend:** Set `branch_enabled` to `true` and `branch` to `main`. This fork is built with current Frontend releases in mind.
+> - **Riven Frontend:** Set `repo_owner` to `coledeb`, `branch_enabled` to `true`, and `branch` to `settings-ui`. This uses my [Riven Frontend fork](https://github.com/coledeb/riven-frontend/tree/settings-ui) (current upstream Frontend plus a reworked settings page), which is the Frontend this fork is built and tested with.
 >   - Updating the Frontend **WILL** break the embedded UI in DUMB, as DUMB currently expects an older pinned version. See the [instructions](https://github.com/coledeb/riven/blob/torbox/scripts/DUMB-EMBEDDED-UI.md) in this repo's [scripts](https://github.com/coledeb/riven/tree/torbox/scripts) folder for more information on this, as well as a fix.
 > - **Riven Backend:** Set `repo_owner` to `coledeb`, `repo_name` to `riven`, `branch_enabled` to `true`, and `branch` to `torbox`.
 > - I also recommend setting `auto_update`  to `true`, and `auto_update_mode` to at least `check_only`; I am actively pushing updates as I work on the fork.
