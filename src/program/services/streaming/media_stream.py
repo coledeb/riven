@@ -45,6 +45,34 @@ from .stream_connection import StreamConnection
 # Providers that require proxy connections for streaming
 PROXY_REQUIRED_PROVIDERS = {"alldebrid"}
 
+# HTTP 429 handling. A CDN that rate limits us must get a real pause, shared by
+# every connection to that host (the main stream plus header/footer/scan reads),
+# or the parallel retries keep it rate limited until reads fail.
+RATE_LIMIT_BACKOFFS = [2.0, 4.0, 8.0]
+RATE_LIMIT_MAX_WAIT = 30.0
+_host_paused_until: dict[str, float] = {}
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Seconds from a numeric Retry-After header, if present."""
+
+    try:
+        return float(response.headers.get("Retry-After", ""))
+    except ValueError:
+        return None
+
+
+def _pause_host(host: str, seconds: float) -> None:
+    seconds = min(max(seconds, 0.0), RATE_LIMIT_MAX_WAIT)
+    until = trio.current_time() + seconds
+    _host_paused_until[host] = max(_host_paused_until.get(host, 0.0), until)
+
+
+async def _wait_for_host(host: str) -> None:
+    remaining = _host_paused_until.get(host, 0.0) - trio.current_time()
+    if remaining > 0:
+        await trio.sleep(min(remaining, RATE_LIMIT_MAX_WAIT))
+
 
 type ReadType = Literal[
     "header_scan",
@@ -792,6 +820,12 @@ class MediaStream:
 
         for attempt in range(max_attempts):
             try:
+                host = httpx.URL(self.target_url.value).host
+            except httpx.InvalidURL:
+                host = ""  # handled as InvalidURL by the request below
+            await _wait_for_host(host)
+
+            try:
                 async with self.async_client.stream(
                     method="GET",
                     url=self.target_url.value,
@@ -891,18 +925,23 @@ class MediaStream:
                         provider=self.provider
                     ) from e
                 elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
-                    # Rate limited - back off exponentially, don't refresh URL
+                    # Rate limited - pause every connection to this host
+                    # (Retry-After if given, else 2/4/8 s), don't refresh URL
+                    delay = _retry_after_seconds(e.response)
+                    if delay is None:
+                        delay = RATE_LIMIT_BACKOFFS[
+                            min(attempt, len(RATE_LIMIT_BACKOFFS) - 1)
+                        ]
+                    _pause_host(host, delay)
+
                     logger.warning(
                         self.build_log_message(
-                            f"HTTP 429 Rate Limited - attempt {attempt + 1}"
+                            f"HTTP 429 Rate Limited - attempt {attempt + 1}, "
+                            f"pausing {host} for {min(delay, RATE_LIMIT_MAX_WAIT):.0f}s"
                         )
                     )
 
-                    if await self._retry_with_backoff(
-                        attempt,
-                        max_attempts,
-                        backoffs,
-                    ):
+                    if attempt < max_attempts - 1:
                         continue
 
                     raise DebridServiceRateLimitedException(
