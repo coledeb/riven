@@ -272,6 +272,12 @@ def test_library_match_uses_aliases_subtitle_halves_and_season_years(
         SimpleNamespace(
             id=486, title="Coyote vs. Acme", aired_at=datetime(2026, 8, 20), aliases={}
         ),
+        SimpleNamespace(
+            id=512, title="Tulsa King", aired_at=datetime(2022, 11, 13), aliases={}
+        ),
+        SimpleNamespace(id=513, title="King", aired_at=None, aliases={}),
+        SimpleNamespace(id=514, title="The King", aired_at=None, aliases={}),
+        SimpleNamespace(id=515, title="Lost", aired_at=None, aliases={}),
     ]
 
     class FakeSession:
@@ -285,12 +291,23 @@ def test_library_match_uses_aliases_subtitle_halves_and_season_years(
     monkeypatch.setattr(torbox_import, "db_session", fake_session)
     lib = importer._match_library
 
-    assert lib("show", "kny", None, exact=True).item_id == 301
-    assert lib("show", "Demon Slayer", None, exact=True) is None
-    assert lib("show", "Demon Slayer", None, exact=False).item_id == 301
-    assert lib("show", "Kimetsu no Yaiba", 2024, exact=False).item_id == 301
-    assert lib("movie", "Coyote vs Acme", 2026, exact=True).item_id == 486
-    assert lib("movie", "Coyote vs Acme", 2019, exact=True) is None
+    assert lib("show", "kny", None, "exact").item_id == 301
+    assert lib("show", "Demon Slayer", None, "exact") is None
+    assert lib("show", "Demon Slayer", None, "halves").item_id == 301
+    assert lib("show", "Kimetsu no Yaiba", 2024, "halves").item_id == 301
+    assert lib("movie", "Coyote vs Acme", 2026, "exact").item_id == 486
+    assert lib("movie", "Coyote vs Acme", 2019, "exact") is None
+
+    # Two-language names: the longest title (2+ words) at either end, word-aligned
+    assert lib("show", "Král Tulsy Tulsa King", None, "exact") is None
+    assert lib("show", "Král Tulsy Tulsa King", None, "edges").item_id == 512
+    assert lib("show", "Tulsa King Král Tulsy", None, "edges").item_id == 512
+    assert lib("show", "Lost Girl", None, "edges") is None
+    assert lib("show", "Burger King", None, "edges") is None
+    assert lib("show", "Mistulsa King", None, "edges") is None
+    assert lib("show", "The King Tulsa King", None, "edges") == (
+        "2 titles in the library match 'The King Tulsa King'"
+    )
 
 
 def with_file(item, infohash):

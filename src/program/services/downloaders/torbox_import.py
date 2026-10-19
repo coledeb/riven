@@ -203,11 +203,15 @@ class TorBoxAccountImport:
         year = data.year or None
 
         # Library first (exact title or alias, then either half of "Title:
-        # Subtitle"), so swaps never create a second copy of a title
-        match = self._match_library(kind, title, year, exact=True)
+        # Subtitle", then a title at either end of a two-language name), so
+        # swaps never create a second copy of a title
+        match = self._match_library(kind, title, year, "exact")
 
         if match is None:
-            match = self._match_library(kind, title, year, exact=False)
+            match = self._match_library(kind, title, year, "halves")
+
+        if match is None:
+            match = self._match_library(kind, title, year, "edges")
 
         if match is None:
             match = self._match_tmdb(kind, title, year)  # errors are retried next check
@@ -219,7 +223,11 @@ class TorBoxAccountImport:
         return match
 
     def _match_library(
-        self, kind: str, title: str, year: int | None, exact: bool
+        self,
+        kind: str,
+        title: str,
+        year: int | None,
+        mode: Literal["exact", "halves", "edges"],
     ) -> Match | str | None:
         wanted = _norm(title)
 
@@ -231,13 +239,38 @@ class TorBoxAccountImport:
             ).all()
 
         def names(row: Any) -> set[str]:
-            if not exact:
+            if mode == "halves":
                 return {_norm(part) for part in row.title.split(":") if part.strip()}
 
             aliases = [a for values in (row.aliases or {}).values() for a in values]
             return {_norm(n) for n in [row.title, *aliases] if n}
 
-        hits = [r for r in rows if r.title and wanted in names(r)]
+        def edge_words(row: Any) -> int:
+            """Words of the longest name that starts or ends the wanted title.
+
+            Dual-language names glue two titles together ("Král Tulsy  Tulsa
+            King"). Names under two words are skipped so "King" or "Lost" never
+            match by being part of a longer title.
+            """
+
+            longest = 0
+
+            for name in names(row):
+                count = len(name.split())
+
+                if count >= 2 and (
+                    wanted.startswith(name + " ") or wanted.endswith(" " + name)
+                ):
+                    longest = max(longest, count)
+
+            return longest
+
+        if mode == "edges":
+            scored = [(edge_words(r), r) for r in rows if r.title]
+            best = max((n for n, _ in scored), default=0)
+            hits = [r for n, r in scored if best and n == best]
+        else:
+            hits = [r for r in rows if r.title and wanted in names(r)]
 
         if year:
             near = [r for r in hits if r.aired_at and abs(r.aired_at.year - year) <= 1]
