@@ -449,3 +449,137 @@ def test_torrent_in_use_when_database_unavailable(downloader, monkeypatch):
 
     monkeypatch.setattr(torbox, "db_session", broken)
     assert downloader._torrent_in_use("123") is True
+
+
+# --- unused torrent cleanup ---
+
+
+@pytest.fixture(autouse=True)
+def created_file(tmp_path, monkeypatch):
+    """Keep the own-torrent list out of the real data dir."""
+
+    monkeypatch.setattr(torbox, "data_dir_path", tmp_path)
+    return tmp_path / torbox.CREATED_FILE
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(torbox.time, "monotonic", lambda: now[0])
+    return now
+
+
+def test_created_torrents_survive_restart(downloader, fake, created_file, monkeypatch):
+    fake.cached[CACHED] = episode_files()
+    container = downloader.get_instant_availability(CACHED, "show")
+    assert container.torrent_id in json.loads(created_file.read_text())
+
+    restarted = TorBoxDownloader()
+    monkeypatch.setattr(restarted, "_torrent_in_use", lambda _id: False)
+    restarted.delete_torrent(container.torrent_id)
+
+    assert fake.torrents == {}
+    assert json.loads(created_file.read_text()) == {}
+
+
+def test_unused_torrent_removed_after_grace(downloader, fake, clock, monkeypatch):
+    fake.cached[CACHED] = episode_files()
+    container = downloader.get_instant_availability(CACHED, "show")
+    monkeypatch.setattr(downloader, "_used_ids", lambda: set())
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: False)
+
+    downloader.remove_unused()
+    clock[0] += 29 * 60
+    downloader.remove_unused()
+    assert int(container.torrent_id) in fake.torrents
+
+    clock[0] += 60
+    downloader.remove_unused()
+    assert fake.torrents == {}
+    assert downloader.created_ids() == set()
+
+
+def test_unused_clock_resets_when_used_again(downloader, fake, clock, monkeypatch):
+    fake.cached[CACHED] = episode_files()
+    tid = downloader.get_instant_availability(CACHED, "show").torrent_id
+    used = set[str]()
+    monkeypatch.setattr(downloader, "_used_ids", lambda: used)
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: tid in used)
+
+    downloader.remove_unused()
+    clock[0] += 20 * 60
+    used.add(tid)
+    downloader.remove_unused()
+    used.clear()
+    clock[0] += 20 * 60
+    downloader.remove_unused()
+
+    assert int(tid) in fake.torrents
+
+
+def test_used_torrent_kept(downloader, fake, clock, monkeypatch):
+    fake.cached[CACHED] = episode_files()
+    tid = downloader.get_instant_availability(CACHED, "show").torrent_id
+    monkeypatch.setattr(downloader, "_used_ids", lambda: {tid})
+
+    downloader.remove_unused()
+    clock[0] += 120 * 60
+    downloader.remove_unused()
+
+    assert int(tid) in fake.torrents
+
+
+def test_torrent_riven_did_not_add_never_removed(downloader, fake, clock, monkeypatch):
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    monkeypatch.setattr(downloader, "_used_ids", lambda: set())
+
+    downloader.remove_unused()
+    clock[0] += 120 * 60
+    downloader.remove_unused()
+
+    assert existing_id in fake.torrents
+    assert fake.count("torrents/controltorrent") == 0
+
+
+def test_torrent_gone_from_account_is_forgotten(
+    downloader, fake, created_file, monkeypatch
+):
+    fake.cached[CACHED] = episode_files()
+    tid = downloader.get_instant_availability(CACHED, "show").torrent_id
+    fake.torrents.clear()
+    monkeypatch.setattr(downloader, "_used_ids", lambda: set())
+
+    downloader.remove_unused()
+
+    assert downloader.created_ids() == set()
+    assert tid not in json.loads(created_file.read_text())
+
+
+def test_cleanup_off_removes_nothing(downloader, fake, clock, monkeypatch):
+    monkeypatch.setattr(downloader.settings, "remove_unused_torrents", False)
+    fake.cached[CACHED] = episode_files()
+    tid = downloader.get_instant_availability(CACHED, "show").torrent_id
+    monkeypatch.setattr(downloader, "_used_ids", lambda: set())
+
+    downloader.remove_unused()
+    clock[0] += 120 * 60
+    downloader.remove_unused()
+
+    assert int(tid) in fake.torrents
+
+
+def test_cleanup_skipped_when_database_unavailable(
+    downloader, fake, clock, monkeypatch
+):
+    fake.cached[CACHED] = episode_files()
+    tid = downloader.get_instant_availability(CACHED, "show").torrent_id
+
+    def broken():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(downloader, "_used_ids", broken)
+    downloader.remove_unused()
+    clock[0] += 120 * 60
+    downloader.remove_unused()
+
+    assert int(tid) in fake.torrents

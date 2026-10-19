@@ -95,6 +95,10 @@ class ProgramScheduler:
                 "interval": torbox.account_import.interval
             }
 
+        # Delete torrents Riven added that nothing uses any more (checks the setting itself)
+        if torbox.enabled:
+            scheduled_functions[self._remove_unused_torrents] = {"interval": 10 * 60}
+
         # Report items that stay missing as Overseerr issues
         overseerr = settings_manager.settings.content.overseerr
 
@@ -245,6 +249,18 @@ class ProgramScheduler:
             logger.info(
                 f"Released {released} expired blacklist entr{'y' if released == 1 else 'ies'} ({len(retry)} item(s) retried)"
             )
+
+    def _remove_unused_torrents(self) -> None:
+        """Delete TorBox torrents Riven added that no file uses any more."""
+
+        services = self.program.services
+
+        if not services:
+            return
+
+        for service in services.downloader.services.values():
+            if service.key == "torbox" and service.initialized:
+                service.remove_unused()
 
     def _retry_library(self) -> None:
         """Retry items that failed to download by emitting events into the EM."""

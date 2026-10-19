@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import ipaddress
+import json
 import socket
 import threading
 import time
@@ -29,7 +30,7 @@ from program.services.streaming.exceptions.debrid_service_exception import (
     DebridServiceLinkUnavailable,
 )
 from program.settings import settings_manager
-from program.utils import get_version
+from program.utils import data_dir_path, get_version
 from program.utils.request import (
     CircuitBreakerOpen,
     SmartResponse,
@@ -54,6 +55,9 @@ DEFAULT_PAUSE_SECONDS = 300
 MAX_PAUSE_SECONDS = 3600
 
 LIST_PAGE_SIZE = 1000
+
+# Riven's own torrents, kept across restarts: {torrent id: time added}
+CREATED_FILE = "torbox_created.json"
 
 
 class TorBoxError(Exception):
@@ -168,8 +172,11 @@ class TorBoxDownloader(DownloaderBase):
       already there returns the existing torrent. Such torrents may belong to
       other tools sharing the account, so by default Riven only deletes
       torrents that it created itself during this run
-      (``only_manage_own_torrents``). Torrents that Riven's library still
-      links to are never deleted.
+      (``only_manage_own_torrents``; the list survives restarts). Torrents
+      that Riven's library still links to are never deleted.
+    - With ``remove_unused_torrents`` on, torrents Riven added that no file
+      uses any more (replaced, blacklisted, removed) are deleted once they
+      have stayed unused for ``unused_grace_minutes``.
     - File links are stored without the API key and resolved through
       requestdl only when the VFS needs them.
     """
@@ -180,7 +187,10 @@ class TorBoxDownloader(DownloaderBase):
         self.api: TorBoxAPI | None = None
 
         self._lock = threading.Lock()
-        self._created = set[str]()
+        self._created = dict[str, str]()
+        self._created_file = data_dir_path / CREATED_FILE
+        self._unused_since = dict[str, float]()
+        self._load_created()
         self._paused_until = dict[str, float]()
         self._link_bucket = TokenBucket(
             rate=LINK_RATE_PER_SECOND,
@@ -326,6 +336,23 @@ class TorBoxDownloader(DownloaderBase):
 
         with self._lock:
             return set(self._created)
+
+    def _load_created(self) -> None:
+        try:
+            data = json.loads(self._created_file.read_text())
+            self._created = {str(k): str(v) for k, v in data.items()}
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"TorBox: ignoring unreadable {self._created_file}: {e}")
+
+    def _save_created(self) -> None:
+        """Write the own-torrent list; call with self._lock held."""
+
+        try:
+            self._created_file.write_text(json.dumps(self._created, sort_keys=True))
+        except Exception as e:
+            logger.warning(f"TorBox: couldn't save {self._created_file}: {e}")
 
     def _iter_account(self):
         """Yield the account's torrents page by page, read fresh from TorBox."""
@@ -541,7 +568,8 @@ class TorBoxDownloader(DownloaderBase):
         torrent_id = str(torrent_id)
 
         with self._lock:
-            self._created.add(torrent_id)
+            self._created[torrent_id] = datetime.now(timezone.utc).isoformat()
+            self._save_created()
 
         return torrent_id
 
@@ -615,8 +643,8 @@ class TorBoxDownloader(DownloaderBase):
         """
         Delete a torrent on TorBox.
 
-        With ``only_manage_own_torrents`` on (the default), torrents that were
-        already on the account are left alone: other tools sharing the account
+        With ``only_manage_own_torrents`` on (the default), torrents Riven
+        didn't add are left alone: other tools sharing the account
         may still be using them. With it off, those are deleted too. A torrent
         Riven's library still links to is never deleted.
 
@@ -656,7 +684,75 @@ class TorBoxDownloader(DownloaderBase):
             )
 
         with self._lock:
-            self._created.discard(torrent_id)
+            if self._created.pop(torrent_id, None) is not None:
+                self._save_created()
+            self._unused_since.pop(torrent_id, None)
+
+    def remove_unused(self) -> None:
+        """
+        Delete torrents Riven added that no file has used for a while.
+
+        A torrent counts as unused from the first check that finds no file
+        linking to it; it is deleted once that has lasted
+        ``unused_grace_minutes``, so a torrent mid-add or mid-swap is safe.
+        Torrents Riven didn't add are never touched.
+        """
+
+        if not self.settings.remove_unused_torrents:
+            return
+
+        try:
+            on_account = {str(t["id"]) for t in self._iter_account() if t.get("id")}
+            used = self._used_ids()
+        except Exception as e:
+            logger.debug(f"TorBox: skipping unused-torrent check: {e}")
+            return
+
+        for tid in self._due_unused(on_account, used):
+            try:
+                self.delete_torrent(tid)
+                logger.info(f"Removed unused TorBox torrent {tid}")
+            except Exception as e:
+                logger.debug(f"Failed to remove unused TorBox torrent {tid}: {e}")
+
+    def _due_unused(self, on_account: set[str], used: set[str]) -> list[str]:
+        """Update the unused clocks; return own torrents unused past the grace time."""
+
+        now = time.monotonic()
+        grace = self.settings.unused_grace_minutes * 60
+        due = list[str]()
+
+        with self._lock:
+            gone = set(self._created) - on_account
+            for tid in gone:
+                del self._created[tid]
+            if gone:
+                self._save_created()
+
+            for tid in list(self._unused_since):
+                if tid not in self._created or tid in used:
+                    del self._unused_since[tid]
+
+            for tid in set(self._created) - used:
+                since = self._unused_since.setdefault(tid, now)
+                if now - since >= grace:
+                    due.append(tid)
+
+        return due
+
+    def _used_ids(self) -> set[str]:
+        """Ids of the torrents Riven's library has files from."""
+
+        with db_session() as session:
+            return {
+                str(tid)
+                for (tid,) in session.execute(
+                    select(MediaEntry.provider_download_id).where(
+                        MediaEntry.provider == self.key,
+                        MediaEntry.provider_download_id.is_not(None),
+                    )
+                ).all()
+            }
 
     def _torrent_in_use(self, torrent_id: str) -> bool:
         """

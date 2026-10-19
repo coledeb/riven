@@ -125,11 +125,24 @@ class TorBoxModel(Observable):
     only_manage_own_torrents: bool = Field(
         default=True,
         description=(
-            "Only delete TorBox torrents that Riven added during this run. Turn off "
-            "to also clean up failed torrents that were already on the account; "
+            "Only delete TorBox torrents that Riven added itself. Turn off to also "
+            "clean up failed torrents that were already on the account; "
             "torrents still used by Riven's library are always kept. Leave on if "
             "other tools share the TorBox account."
         ),
+    )
+    remove_unused_torrents: bool = Field(
+        default=True,
+        description=(
+            "Delete torrents Riven added once no file uses them any more "
+            "(replaced, blacklisted or removed). Torrents Riven didn't add are "
+            "never touched."
+        ),
+    )
+    unused_grace_minutes: int = Field(
+        default=30,
+        ge=5,
+        description="Minutes a torrent must stay unused before it is deleted",
     )
     account_import: TorBoxImportModel = Field(
         default_factory=lambda: TorBoxImportModel(),
