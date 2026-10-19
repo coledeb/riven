@@ -53,6 +53,7 @@ def settings(fake, monkeypatch):  # noqa: F811
     monkeypatch.setattr(tb, "active_download_slots", 5)
     monkeypatch.setattr(tb.uncached, "enabled", True)
     monkeypatch.setattr(tb.uncached, "seeder_tiers", [25, 10, 5])
+    monkeypatch.setattr(tb.uncached, "prefer", "quality")
     monkeypatch.setattr(tb.uncached, "stall_minutes", 60)
     monkeypatch.setattr(tb.uncached, "notify_urls", [])
     return tb.uncached
@@ -176,6 +177,19 @@ def test_candidates_prefer_quality_then_seeder_tier(tb):
         tb.uncached.remember_not_cached(item.id, s.infohash)
 
     assert tb.uncached.candidates(item, ordered) == [uhd_few, hd_many, hd_ok, sd_many]
+
+
+def test_candidates_can_prefer_seeders(tb, settings, monkeypatch):
+    monkeypatch.setattr(settings, "prefer", "seeders")
+    uhd_few = stream("1" * 40, 12, "2160p")
+    hd_many = stream("2" * 40, 30, "1080p")
+    hd_ok = stream("3" * 40, 26, "720p")
+    ordered = [uhd_few, hd_many, hd_ok]  # quality order
+    item = movie(ordered)
+    for s in ordered:
+        tb.uncached.remember_not_cached(item.id, s.infohash)
+
+    assert tb.uncached.candidates(item, ordered) == [hd_many, hd_ok, uhd_few]
 
 
 # --- downloader flow ---

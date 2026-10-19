@@ -124,16 +124,24 @@ class TorBoxUncachedModel(Observable):
         default=False,
         description=(
             "When no cached torrent passes your ranking and file rules, let TorBox "
-            "download an uncached one from peers. Quality comes first: the best "
-            "resolution, then the highest seeder tier within it. The item waits "
-            "until TorBox finishes. Seeder counts come from Torrentio."
+            "download an uncached one from peers, picked by quality or by "
+            "seeders first (see prefer). The item waits until TorBox finishes. "
+            "Seeder counts come from Torrentio."
+        ),
+    )
+    prefer: Literal["quality", "seeders"] = Field(
+        default="quality",
+        description=(
+            "How to pick among uncached candidates. quality: best resolution "
+            "first, then the highest seeder tier within it. seeders: highest "
+            "seeder tier first, then the best quality within it."
         ),
     )
     seeder_tiers: list[int] = Field(
         default_factory=lambda: [25, 10, 5],
         description=(
-            "Seeder thresholds, most preferred first: within the same resolution, "
-            "a torrent in a higher tier wins. The lowest is the minimum; "
+            "Seeder thresholds, most preferred first; how much they weigh "
+            "depends on prefer. The lowest is the minimum; "
             "torrents with fewer (or unknown) seeders are never downloaded."
         ),
     )
