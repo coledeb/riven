@@ -3,8 +3,11 @@ Link torrents added to the TorBox account outside Riven into the library.
 
 Torrents added with another tool (for example Debrid Media Manager) are
 matched to a movie or show by name, first against Riven's library and then
-through a TMDB search. Their files only fill movies and episodes that have
-no file yet; nothing Riven already has is replaced, and nothing is deleted.
+through a TMDB search. Their files fill movies and episodes that have no file
+yet. With ``replace_existing`` on they also replace the files Riven already
+has for what they contain (held in place in the VFS, so Plex sees the same
+file switch source; files being played are switched on a later check).
+Nothing is deleted.
 
 When a torrent Riven uses disappears from the account, the items using it are
 reset, and another account torrent covering them is preferred over a new
@@ -335,7 +338,25 @@ class TorBoxAccountImport:
                 if item is None:
                     return None
 
-            if self._busy(session, item.id) or not self._has_gap(item, torrent):
+            if self._busy(session, item.id):
+                return None
+
+            targets = (
+                self._replace_targets(item, torrent)
+                if self.settings.replace_existing
+                else []
+            )
+
+            if not targets and not self._has_gap(item, torrent):
+                return None
+
+            vfs = self._program().services.filesystem.riven_vfs
+
+            if vfs and any(vfs.is_open(t) for t in targets):
+                logger.debug(
+                    f"TorBox import: '{torrent.get('name')}' replaces a file that is "
+                    "open; trying again on the next check"
+                )
                 return None
 
             item_type = "movie" if isinstance(item, Movie) else "show"
@@ -356,8 +377,16 @@ class TorBoxAccountImport:
             processed = set[str]()
             downloader = self._program().services.downloader
 
+            if targets:
+                self._clear_for_replace(session, targets)
+                logger.info(
+                    f"TorBox import: replacing {len(targets)} file(s) of "
+                    f"{item.log_string} with '{torrent.get('name')}'"
+                )
+
             if not downloader.update_item_attributes(item, result, torbox, processed):
                 session.rollback()
+                self._restore(targets)
                 return None
 
             if isinstance(item, Movie):
@@ -465,6 +494,79 @@ class TorBoxAccountImport:
                     return True
 
         return False
+
+    @staticmethod
+    def _replace_targets(
+        item: Movie | Show, torrent: dict[str, Any]
+    ) -> list[Movie | Episode]:
+        """Items with a file from another torrent that this torrent also has."""
+
+        infohash = str(torrent.get("hash") or "").lower()
+
+        def replaceable(i: Movie | Episode) -> bool:
+            active = i.active_stream.infohash.lower() if i.active_stream else None
+            return (
+                bool(i.filesystem_entry)
+                and active != infohash
+                and not any(s.infohash == infohash for s in i.blacklisted_streams)
+            )
+
+        if isinstance(item, Movie):
+            return [item] if replaceable(item) else []
+
+        targets = dict[int, Episode]()
+
+        for file in torrent.get("files") or []:
+            try:
+                data = parse(str(file.get("short_name") or file.get("name") or ""))
+            except Exception as e:
+                logger.debug(f"TorBox import: can't parse file name: {e}")
+                continue
+
+            season = data.seasons[0] if data.seasons else None
+
+            # Same files the downloader skips (specials, episode 0)
+            if not data.episodes or data.episodes == [0] or season == 0:
+                continue
+
+            for number in data.episodes:
+                episode = item.get_absolute_episode(number, season)
+
+                if episode and replaceable(episode):
+                    targets[episode.id] = episode
+
+        return list(targets.values())
+
+    def _clear_for_replace(
+        self, session: Session, targets: list[Movie | Episode]
+    ) -> None:
+        """Drop the targets' current files, holding their VFS nodes for the swap."""
+
+        from routers.secure.items import apply_item_mutation
+
+        def mutation(i: MediaItem, s: Session) -> None:  # noqa: ARG001
+            i.reset(keep_vfs=True)
+
+        for target in targets:
+            apply_item_mutation(
+                program=self._program(),
+                item=target,
+                mutation_fn=mutation,
+                session=session,
+            )
+
+    def _restore(self, targets: list[Movie | Episode]) -> None:
+        """Put held files back on their old source after a failed replace."""
+
+        vfs = self._program().services.filesystem.riven_vfs
+
+        if not vfs or not targets:
+            return
+
+        with db_session() as session:
+            for target in targets:
+                if item := session.get(MediaItem, target.id):
+                    vfs.add(item)
 
     def _busy(self, session: Session, item_id: int) -> bool:
         em = self._program().em

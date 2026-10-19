@@ -8,6 +8,8 @@ from kink import di
 
 from program.apis.tmdb_api import TMDBApi
 from program.media.item import Episode, Movie, Season, Show
+from program.media.media_entry import MediaEntry
+from program.media.models import ActiveStream
 from program.media.state import States
 from program.media.stream import Stream
 from program.services.downloaders import torbox_import
@@ -288,3 +290,48 @@ def test_library_match_uses_aliases_subtitle_halves_and_season_years(
     assert lib("show", "Kimetsu no Yaiba", 2024, exact=False).item_id == 301
     assert lib("movie", "Coyote vs Acme", 2026, exact=True).item_id == 486
     assert lib("movie", "Coyote vs Acme", 2019, exact=True) is None
+
+
+def with_file(item, infohash):
+    item.active_stream = ActiveStream(infohash=infohash, id="1")
+    item.filesystem_entries.append(MediaEntry.__mapper__.class_manager.new_instance())
+
+
+def test_replace_targets_are_episodes_with_a_file_from_another_torrent():
+    show = make_show()
+    e1, e2 = show.seasons[0].episodes
+    e1.id, e2.id = 11, 12
+    with_file(e1, "b" * 40)  # from another torrent: replaced
+    torrent = pack("Show.S01E01.1080p.mkv", "Show.S01E02.1080p.mkv")
+
+    targets = TorBoxAccountImport._replace_targets
+
+    assert targets(show, torrent) == [e1]  # e2 has no file: a gap, not a replace
+
+    with_file(e2, "a" * 40)  # already from this torrent: nothing to do
+    assert targets(show, torrent) == [e1]
+
+    dead = Stream.__mapper__.class_manager.new_instance()
+    dead.infohash = "a" * 40
+    e1.blacklisted_streams.append(dead)  # this torrent failed for e1 before
+    assert targets(show, torrent) == []
+
+
+def test_replace_targets_only_episodes_in_the_torrent():
+    show = make_show()
+    e1, e2 = show.seasons[0].episodes
+    e1.id, e2.id = 11, 12
+    with_file(e1, "b" * 40)
+    with_file(e2, "b" * 40)
+
+    assert TorBoxAccountImport._replace_targets(
+        show, pack("Show.S01E02.1080p.mkv")
+    ) == [e2]
+
+
+def test_replace_targets_movie():
+    movie = Movie({"title": "Film", "tmdb_id": "1"})
+    assert TorBoxAccountImport._replace_targets(movie, pack("Film.2020.mkv")) == []
+
+    with_file(movie, "b" * 40)
+    assert TorBoxAccountImport._replace_targets(movie, pack("Film.2020.mkv")) == [movie]

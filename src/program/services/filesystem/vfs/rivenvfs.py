@@ -722,6 +722,21 @@ class RivenVFS(pyfuse3.Operations):
 
         logger.debug(f"Holding VFS nodes for item {item.id} while re-sourcing: {paths}")
 
+    def is_open(self, item: MediaItem) -> bool:
+        """Whether the item's video file has an open file handle (e.g. being played)."""
+
+        if not (entry := item.media_entry):
+            return False
+
+        inodes = {
+            node.inode
+            for node in self._get_nodes_by_original_filename(entry.original_filename)
+        }
+
+        return any(
+            handle["inode"] in inodes for handle in list(self._file_handles.values())
+        )
+
     def _expire_hold(self, item_id: int, original_filename: str) -> None:
         """Remove a held file whose item found no new source in time."""
 

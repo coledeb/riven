@@ -75,9 +75,19 @@ class TorBoxImportModel(Observable):
         default=False,
         description=(
             "Link torrents added to the TorBox account outside Riven (e.g. with "
-            "Debrid Media Manager) into the library. Only fills missing movies and "
-            "episodes; deleting a torrent Riven uses makes Riven prefer another "
+            "Debrid Media Manager) into the library. Fills missing movies and "
+            "episodes (see replace_existing to also replace existing ones); deleting a torrent Riven uses makes Riven prefer another "
             "account torrent for it. Never deletes. Applies after a restart."
+        ),
+    )
+    replace_existing: bool = Field(
+        default=False,
+        description=(
+            "Also let a newly added account torrent replace the files Riven already "
+            "has for the movie or episodes it contains (e.g. a better copy picked in "
+            "Debrid Media Manager). Files stay in place and switch to the new torrent; "
+            "an episode that is being played is switched after playback. The old "
+            "torrent is left on the account."
         ),
     )
     interval: int = Field(
@@ -618,9 +628,7 @@ class OverseerrIssuesModel(Observable):
             "(releases often appear hours after the air date)"
         ),
     )
-    interval: int = Field(
-        default=300, ge=60, description="Seconds between checks"
-    )
+    interval: int = Field(default=300, ge=60, description="Seconds between checks")
     user_id: int = Field(
         default=0,
         ge=0,
@@ -762,7 +770,9 @@ class TorrentioConfig(Observable):
 
 
 class DebridioConfig(Observable):
-    enabled: bool = Field(default=False, description="Enable Debridio scraper (TorBox only)")
+    enabled: bool = Field(
+        default=False, description="Enable Debridio scraper (TorBox only)"
+    )
     api_key: str = Field(default="", description="Debridio API key")
     url: EmptyOrUrl = Field(
         default="https://addon.debridio.com", description="Debridio addon URL"
@@ -887,9 +897,13 @@ class AIOStreamsConfig(Observable):
         default=1, ge=0, description="Number of retries for failed requests"
     )
     ratelimit: bool = Field(default=True, description="Enable rate limiting")
-    proxy_url: EmptyOrUrl = Field(default="", description="Proxy URL for AIOStreams requests")
+    proxy_url: EmptyOrUrl = Field(
+        default="", description="Proxy URL for AIOStreams requests"
+    )
     uuid: str = Field(default="", description="User UUID for AIOStreams authentication")
-    password: str = Field(default="", description="User password for AIOStreams authentication")
+    password: str = Field(
+        default="", description="User password for AIOStreams authentication"
+    )
 
 
 ANIME_AUDIO_TYPES = ("dual", "japanese", "dubbed")
@@ -934,7 +948,11 @@ class ScraperModel(Observable):
             "dubbed = dubbed only."
         ),
         json_schema_extra={
-            "items": {"type": "string", "readOnly": True, "x-ui-options": {"hideTitle": True}},
+            "items": {
+                "type": "string",
+                "readOnly": True,
+                "x-ui-options": {"hideTitle": True},
+            },
             "x-ui-options": {"addable": False, "removable": False},
         },
     )
@@ -992,7 +1010,8 @@ class ScraperModel(Observable):
         default_factory=lambda: RarbgConfig(), description="RARBG configuration"
     )
     aiostreams: AIOStreamsConfig = Field(
-        default_factory=lambda: AIOStreamsConfig(), description="AIOStreams configuration"
+        default_factory=lambda: AIOStreamsConfig(),
+        description="AIOStreams configuration",
     )
 
 
@@ -1008,7 +1027,9 @@ class RTNSettingsModel(SettingsModel, Observable):
 
         unknown: set[str] = set()
         for field in ("required", "allowed", "exclude", "preferred"):
-            if field not in type(value).model_fields:  # "allowed" is newer than RTN 1.9.3
+            if (
+                field not in type(value).model_fields
+            ):  # "allowed" is newer than RTN 1.9.3
                 continue
             codes = [c.strip().lower() for c in getattr(value, field, None) or []]
             unknown.update(c for c in codes if c not in LANGUAGES_TRANSLATION_TABLE)
