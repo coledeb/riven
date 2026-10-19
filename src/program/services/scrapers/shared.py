@@ -200,29 +200,7 @@ def parse_results(
 
             if isinstance(item, Episode) and not manual:
                 # Disregard torrents with incorrect episode number logic:
-                skip = False
-
-                # If the torrent has episodes, but the episode number is not present
-                if torrent.data.episodes:
-                    if (
-                        item.number not in torrent.data.episodes
-                        and item.absolute_number not in torrent.data.episodes
-                    ):
-                        skip = True
-
-                # If the torrent does not have episodes, but has seasons, and the parent season is not present
-                elif torrent.data.seasons:
-                    # item is confirmed to be Episode at line 197
-                    # Episode.parent is a Season, and Season has a 'number' attribute
-                    parent_season = cast(Season, item.parent)
-                    if parent_season.number not in torrent.data.seasons:
-                        skip = True
-
-                # If the torrent has neither episodes nor seasons, skip (junk)
-                else:
-                    skip = True
-
-                if skip:
+                if not _check_episode_numbers(item, torrent.data):
                     logger.trace(
                         f"Skipping incorrect episode torrent for {item.log_string}: {raw_title}"
                     )
@@ -315,6 +293,31 @@ def _check_item_year(item: MediaItem, data: ParsedData) -> bool:
             ])
 
     return data.year in valid_years
+
+
+def _check_episode_numbers(item: Episode, data: ParsedData) -> bool:
+    """Check that the torrent contains this episode, in this episode's season."""
+
+    parent_season = cast(Season, item.parent)
+    season_matches = not data.seasons or parent_season.number in data.seasons
+
+    # If the torrent has episodes, the episode number must be present in the right
+    # season (e.g. S13E12 is not S15E12). An absolute number (anime) counts on its own.
+    if data.episodes:
+        if item.number in data.episodes and season_matches:
+            return True
+
+        return (
+            item.absolute_number != item.number
+            and item.absolute_number in data.episodes
+        )
+
+    # If the torrent does not have episodes, but has seasons, the parent season must be present
+    if data.seasons:
+        return season_matches
+
+    # If the torrent has neither episodes nor seasons, skip (junk)
+    return False
 
 
 def _get_item_country(item: MediaItem) -> str | None:
