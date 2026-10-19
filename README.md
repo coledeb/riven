@@ -26,15 +26,15 @@
 >
 > It was written with TorBox's rate limits in mind, aiming to be a respectful API client that stays well inside them rather than leaning on retries:
 >
-> - **Cached-only adds.** Each hash is checked with `checkcached` first, then added with `add_only_if_cached`. Nothing is downloaded from peers, and the hourly add limit isn't spent on uncached torrents.
-> - **Paced requests.** General API calls are paced at 240/min, below the documented 300/min, leaving room for other tools sharing the key. Download-link requests (`requestdl`) have their own, much smaller budget and are paced at 15/min.
-> - **Back off on 429s.** When TorBox returns a 429, the affected requests are paused for its `Retry-After` period instead of being retried in a loop.
-> - **Few link requests.** Links are resolved only when a file is actually opened, then reused.
+> - **Cached-only adds.** Hashes are checked with `checkcached` and added with `add_only_if_cached`, so nothing downloads from peers or wastes the hourly add limit.
+> - **Paced requests.** API calls are paced at 240/min (limit 300) and download-link requests at 15/min, leaving room for other tools on the key.
+> - **Back off on 429s.** Rate-limited requests wait out TorBox's `Retry-After` instead of retrying in a loop.
+> - **Few link requests.** Links are resolved only when a file is opened, then reused.
 > - **Fresh account listings.** `mylist` is read with `bypass_cache=true` and paged.
-> - **Shared accounts are safe.** By default Riven only deletes torrents it created itself, never ones that were already on the account. Optionally, turn off `downloaders.torbox.only_manage_own_torrents` to also clean up failed torrents that were already there. Torrents Riven's library still uses are never deleted, including a season pack Riven just added that one episode failed on.
-> - **Import from the TorBox account (optional).** Turn on `downloaders.torbox.account_import` to link torrents you add with other tools (e.g. [Debrid Media Manager](https://debridmediamanager.com)) into the library. They are matched by name (library first, then TMDB; a two-language name like "Král Tulsy Tulsa King" matches only when both halves are titles of the same show or movie, e.g. TMDB's Czech title for Tulsa King) and only fill missing movies and episodes. Deleting a torrent Riven uses makes it prefer another torrent you added. Optionally, turn on `downloaders.torbox.account_import.replace_existing` so a torrent you add also replaces the files Riven already has for what it contains, even ones Riven had given up on (e.g. a pack whose CDN server was down; to switch back, delete and re-add it). The file keeps its path and switches source. A file being played switches after playback, or, with `stop_playback_to_replace`, Plex playback is stopped with a message (`stop_playback_message`) and the file switches right away (needs Plex Pass). Unmatched torrents can be reported to an Apprise URL such as a Discord webhook.
-> - **Offline CDN servers.** TorBox sometimes hands out links on CDN servers it has taken offline (their names resolve to `0.0.0.0`). Such a link is reported as unavailable, so Riven picks another source for that file instead of failing every read.
-> - **Expired CDN links.** TorBox's CDN answers an expired link with `400 Bad Request` rather than 403/410. Riven now treats a 400 like a 404: it fetches a fresh link once and retries, instead of failing every read of a file that has been sitting for a while.
+> - **Shared accounts are safe.** Riven only deletes torrents it created (`only_manage_own_torrents`) and never ones its library still uses.
+> - **Import from the TorBox account (optional).** `account_import` links torrents you add elsewhere (e.g. [Debrid Media Manager](https://debridmediamanager.com)), matched by name including two-language names, to missing movies and episodes. With `replace_existing` they also replace existing files in place (stopping Plex playback first with `stop_playback_to_replace`), and unmatched ones are reported via Apprise.
+> - **Offline CDN servers.** Links on servers TorBox has taken offline (resolving to `0.0.0.0`) are treated as unavailable, so Riven picks another source.
+> - **Expired CDN links.** A `400 Bad Request` from the CDN is treated like a 404: Riven fetches a fresh link once and retries.
 >
 > The TorBox limits and API behaviour this work relies on come from the [Debrid Media Manager notes on TorBox limits](https://notes.debridmediamanager.com/providers/torbox-limits/), written alongside [zurg](https://github.com/debridmediamanager/zurg-public). Many thanks to the DMM/zurg project for documenting them.
 >
@@ -42,29 +42,29 @@
 >
 > Changes in this fork that aren't strictly part of TorBox support:
 >
-> - **Debridio scraper (TorBox only).** New scraper that gets real torrent names and file lists for Debridio results from TorBox's `checkcached`. Uploader tags like `[EZTVx.to]` are removed from those names, and when Torrentio returns the same torrent its title is kept, so a cached release isn't dropped as a "site" release.
-> - **Torrentio language flags kept.** Torrentio's flag emojis are added to titles as words, so language filters catch more dubs.
-> - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's library paths to the paths Plex uses.
-> - **Settings changes no longer break the mount.** Saving settings keeps the running RivenVFS mount instead of mounting a second one over it.
-> - **Blacklisting a pack for one episode sticks.** An episode playing from a pack now records the pack's blacklist and won't pick it again.
-> - **No library flicker on settings changes.** The VFS tree is only rebuilt when a library profile actually changes.
-> - **Anime audio preference (optional).** `scraping.anime_audio_order` ranks anime by audio type (dual / japanese / dubbed) in your chosen order.
+> - **Debridio scraper (TorBox only).** Gets real torrent names and file lists for Debridio results from TorBox, with uploader tags stripped and Torrentio's title kept for the same torrent.
+> - **Torrentio language flags kept.** Flag emojis become words in titles, so language filters catch more dubs.
+> - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's paths to Plex's.
+> - **Settings changes no longer break the mount.** Saving settings keeps the running RivenVFS mount instead of mounting a second one.
+> - **Blacklisting a pack for one episode sticks.** The pack is blacklisted and not picked again.
+> - **No library flicker on settings changes.** The VFS tree is rebuilt only when a library profile changes.
+> - **Anime audio preference (optional).** `scraping.anime_audio_order` ranks anime by dual / japanese / dubbed audio.
 > - **Keys kept out of logs.** Account keys in logged URLs and errors are replaced with `REDACTED`.
-> - **Manual scrape works for shows.** `GET /api/v1/scrape?item_id=<show>` no longer fails with `DetachedInstanceError`.
-> - **Re-sourced files don't go missing in Plex.** When a link dies, the file stays in place and is swapped to the new source, and reads wait for the swap.
-> - **Playback survives a rate-limited CDN.** A `429` from the streaming server pauses every connection to that server (its `Retry-After`, else 2/4/8 s) instead of retrying within a second from several connections at once, which kept it rate limited until reads failed and players treated the file as ended.
-> - **Airing seasons get their released episodes.** After a season with unreleased episodes is scraped, its released episodes are scraped right away instead of waiting for the daily retry.
-> - **Seerr issues for stuck items (optional).** `content.overseerr.issues` opens a Seerr issue when a released movie or episode stays missing, and resolves it once it's available.
-> - **Slow sources get replaced (optional).** `stream.slow_replace`: when a file playing in Plex keeps timing out or downloads slower than it plays, Riven tries a fresh link, then stops playback with a message and swaps in another copy at the same path. Several slow files at once, or one still slow after moving to another server, is reported (Apprise) instead of acted on.
-> - **Calendar works.** `GET /api/v1/calendar` no longer fails with a 500 (`yield_per` combined with `unique()`).
-> - **Real stream errors reported.** A stream whose first connection fails now raises that error (rate limit, dead link...) instead of trio's `task_status.started()` RuntimeError, so the VFS returns the matching errno.
-> - **Episodes only take torrents from their season.** Scraping S15E12 no longer accepts S13E12 torrents that then fail to download.
-> - **Plex doesn't re-check every folder.** VFS folders keep their modified time until a file is added or removed, instead of always looking just changed.
-> - **File times are correct.** VFS file times are read as UTC, so they're no longer hours in the future.
-> - **Manual retry and scrape always run.** Retry, Retry Library and auto-scrape replace events queued for later (such as a downloader cooldown) instead of being ignored.
-> - **Missing items return 404.** `GET /api/v1/items/<id>` answers 404 for an unknown item instead of 500.
+> - **Manual scrape works for shows.** No more `DetachedInstanceError` from `GET /api/v1/scrape`.
+> - **Re-sourced files don't go missing in Plex.** A file with a dead link stays in place and switches to the new source.
+> - **Playback survives a rate-limited CDN.** A `429` pauses every connection to that server for its `Retry-After` (else 2/4/8 s), instead of retrying until players give up.
+> - **Airing seasons get their released episodes.** Released episodes are scraped right after their season, not at the daily retry.
+> - **Seerr issues for stuck items (optional).** `content.overseerr.issues` opens a Seerr issue for a released item that stays missing and resolves it once available.
+> - **Slow sources get replaced (optional).** `stream.slow_replace` retries a fresh link for a file that keeps stalling in Plex, then swaps in another copy at the same path. Widespread slowness is reported via Apprise instead.
+> - **Calendar works.** `GET /api/v1/calendar` no longer returns 500.
+> - **Real stream errors reported.** A failed first connection raises its real error, so the VFS returns the matching errno.
+> - **Episodes only take torrents from their season.** S15E12 no longer accepts S13E12 torrents.
+> - **Plex doesn't re-check every folder.** VFS folders keep their modified time until their contents change.
+> - **File times are correct.** VFS file times are read as UTC, no longer hours in the future.
+> - **Manual retry and scrape always run.** They replace queued later events (like a downloader cooldown) instead of being ignored.
+> - **Missing items return 404.** `GET /api/v1/items/<id>` no longer returns 500 for unknown items.
 > - **Service names spelled right in settings.** Real-Debrid, Debrid-Link, AllDebrid, MediaFusion, RARBG.
-> - **Live progress shows the right service.** The `event_update` stream and `/api/v1/events` list each job under the service running it, so the frontend can show what Riven is doing with an item.
+> - **Live progress shows the right service.** `event_update` and `/api/v1/events` list each job under the service running it.
 >
 > For full details of each change, see the [commits list](https://github.com/coledeb/riven/commits/torbox).
 
