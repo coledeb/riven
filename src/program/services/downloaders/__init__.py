@@ -111,6 +111,7 @@ class Downloader(Runner[None, DownloaderBase]):
             return
 
         download_success = False
+        already_covered = False
 
         # Track if we hit circuit breaker on any service
         hit_circuit_breaker = False
@@ -213,6 +214,18 @@ class Downloader(Runner[None, DownloaderBase]):
                             stream_failed_on_all_services = False
 
                             break
+                        elif self._already_covered(item):
+                            # Another download (e.g. a multi-season pack fetched
+                            # for a sibling season) filled every episode while
+                            # this one ran: nothing was wrong with the stream
+                            logger.debug(
+                                f"{item.log_string} already has all its files; not blacklisting {stream.infohash}"
+                            )
+
+                            already_covered = True
+                            stream_failed_on_all_services = False
+
+                            break
                         else:
                             raise NoMatchingFilesException(
                                 f"No valid files found for {item.log_string} ({item.id})"
@@ -287,6 +300,9 @@ class Downloader(Runner[None, DownloaderBase]):
                     else:
                         break
 
+                if already_covered:
+                    break
+
                 # Only blacklist if stream genuinely failed on ALL available services
                 # Don't blacklist if we hit circuit breaker in single-provider mode
                 if stream_failed_on_all_services and not held_for_uncached:
@@ -313,6 +329,10 @@ class Downloader(Runner[None, DownloaderBase]):
             logger.error(
                 f"Unexpected error in downloader for {item.log_string} ({item.id}): {e}"
             )
+
+        if already_covered:
+            yield RunnerResult(media_items=[item])
+            return
 
         if not download_success and uncached and not unexpected_error:
             try:
@@ -359,6 +379,34 @@ class Downloader(Runner[None, DownloaderBase]):
                 uncached.forget(item.id)
 
             yield RunnerResult(media_items=[item])
+
+    @staticmethod
+    def _already_covered(item: MediaItem) -> bool:
+        """
+        Whether every wanted episode of a show, season or episode already has a file.
+
+        Paused episodes and seasons (not requested) don't count. Movies are
+        never covered this way: they have only one file to find.
+        """
+
+        if isinstance(item, Episode):
+            return item.filesystem_entry is not None
+
+        if isinstance(item, Season):
+            seasons = [item]
+        elif isinstance(item, Show):
+            seasons = [s for s in item.seasons if s.last_state != States.Paused]
+        else:
+            return False
+
+        episodes = [
+            e
+            for season in seasons
+            for e in season.episodes
+            if e.last_state != States.Paused
+        ]
+
+        return bool(episodes) and all(e.filesystem_entry for e in episodes)
 
     @staticmethod
     def _uncached_downloads(
