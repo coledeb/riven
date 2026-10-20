@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, TypedDict
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -393,10 +393,26 @@ class ProgramScheduler:
         updated = next(indexer_service.run(item, log_msg=False), None)
 
         if updated:
-            session.merge(updated.media_items[0])
+            merged = session.merge(updated.media_items[0])
+
+            # A movie's release date can move either way on reindex (a home release
+            # gets announced): keep its stored state in step and start it once out.
+            was_unreleased = merged.last_state == States.Unreleased
+            if isinstance(merged, Movie) and merged.last_state in (
+                States.Unreleased,
+                States.Indexed,
+            ):
+                merged.store_state()
+
             session.commit()
 
             logger.info(f"Reindexed {item.log_string} from scheduler")
+
+            if was_unreleased and merged.last_state != States.Unreleased:
+                self.program.em.add_event(
+                    Event(emitted_by="Scheduler", item_id=merged.id)
+                )
+                logger.info(f"{merged.log_string} is now released, enqueued")
 
     def _enqueue_item_if_needed(self, session: Session, item: MediaItem) -> None:
         """Refresh state and enqueue item to the event manager if not completed."""
@@ -431,7 +447,7 @@ class ProgramScheduler:
         - schedule upcoming episodes
         - schedule upcoming movies (known release date)
         - schedule ongoing/unreleased shows (computed next air)
-        - schedule unknown-date movies (daily reindex)
+        - schedule unknown-date and not-yet-released movies (daily reindex)
         """
 
         offset_seconds = settings_manager.settings.indexer.schedule_offset_minutes * 60
@@ -595,12 +611,15 @@ class ProgramScheduler:
                         )
 
     def _schedule_unknown_movies(self, session: Session, now: datetime) -> None:
-        """Schedule daily reindex for movies without any known release date."""
+        """
+        Schedule daily reindex for movies not yet released: no known release date, or
+        one in the future (home release dates get announced and moved).
+        """
 
         unknown_movies = (
             session.execute(
                 select(Movie)
-                .where(Movie.aired_at.is_(None))
+                .where(or_(Movie.aired_at.is_(None), Movie.aired_at > now))
                 .where(
                     Movie.last_state.in_(
                         [

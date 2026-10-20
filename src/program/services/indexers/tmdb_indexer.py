@@ -1,6 +1,6 @@
 """TMDB indexer module"""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from kink import di
 from loguru import logger
@@ -10,6 +10,74 @@ from program.apis.trakt_api import TraktAPI
 from program.media.item import MediaItem, Movie
 from program.services.indexers.base import BaseIndexer
 from program.core.runner import MediaItemGenerator, RunnerResult
+
+# TMDB release types: 1 premiere, 2 limited theatrical, 3 theatrical, 4 digital, 5 physical, 6 TV
+THEATRICAL_RELEASE_TYPES = (2, 3)
+HOME_RELEASE_TYPES = (4, 5, 6)
+
+
+def _parse_tmdb_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
+def movie_available_date(
+    movie_details, settings, now: datetime | None = None
+) -> datetime | None:
+    """
+    Date a movie counts as released (its aired_at).
+
+    TMDB's main release date is the cinema release, when only cams and fakes exist. With
+    `movie_wait_for_home_release` on, the movie is released once its first digital,
+    physical or TV release (any country) arrives. Without one listed: the first cinema
+    release plus `movie_home_release_fallback_days`. Cinema releases over a year old
+    count as released either way (TMDB often lacks home dates for older films).
+    """
+
+    release_date = _parse_tmdb_date(movie_details.release_date)
+
+    if not settings.movie_wait_for_home_release:
+        return release_date
+
+    theatrical: list[datetime] = []
+    home: list[datetime] = []
+    results = movie_details.release_dates.results if movie_details.release_dates else None
+
+    for country in results or []:
+        for release in country.release_dates or []:
+            date = _parse_tmdb_date(release.release_date)
+
+            if not date:
+                continue
+
+            if release.type in HOME_RELEASE_TYPES:
+                home.append(date)
+            elif release.type in THEATRICAL_RELEASE_TYPES:
+                theatrical.append(date)
+
+    if release_date:
+        theatrical.append(release_date)
+
+    first_theatrical = min(theatrical) if theatrical else None
+    now = now or datetime.now()
+
+    if first_theatrical and first_theatrical <= now - timedelta(days=365):
+        return first_theatrical
+
+    if home:
+        return min(home)
+
+    if first_theatrical:
+        return first_theatrical + timedelta(
+            days=settings.movie_home_release_fallback_days
+        )
+
+    return None
 
 
 class TMDBIndexer(BaseIndexer):
@@ -109,17 +177,7 @@ class TMDBIndexer(BaseIndexer):
                 )
             )
 
-            # Parse release date
-            release_date = None
-
-            if movie_details.release_date:
-                try:
-                    release_date = datetime.strptime(
-                        movie_details.release_date,
-                        "%Y-%m-%d",
-                    )
-                except (ValueError, TypeError):
-                    pass
+            release_date = movie_available_date(movie_details, self.settings)
 
             # Extract genres
             genres = [
@@ -246,11 +304,7 @@ class TMDBIndexer(BaseIndexer):
             return None
 
         try:
-            release_date = (
-                datetime.strptime(movie_details.release_date, "%Y-%m-%d")
-                if movie_details.release_date
-                else None
-            )
+            release_date = movie_available_date(movie_details, self.settings)
 
             genres = [
                 genre.name.lower() for genre in movie_details.genres or [] if genre.name

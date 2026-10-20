@@ -1206,6 +1206,17 @@ class IndexerModel(Observable):
         ge=0,
         description="Offset in minutes after aired_at time to schedule scraping for episodes and movies (30 minutes default)",
     )
+    movie_wait_for_home_release: bool = Field(
+        default=True,
+        title="Movies: Wait For Home Release",
+        description="A movie counts as released on its first digital, physical or TV release (any country, from TMDB), not when it reaches cinemas. Cinema releases over a year old always count as released.",
+    )
+    movie_home_release_fallback_days: int = Field(
+        default=60,
+        ge=0,
+        title="Movies: Home Release Fallback Days",
+        description="When TMDB lists no digital, physical or TV release: the movie counts as released this many days after it reaches cinemas.",
+    )
 
 
 class DatabaseModel(Observable):
