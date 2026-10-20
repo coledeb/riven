@@ -41,6 +41,20 @@ def test_link_defaults_to_tmdb():
     assert notice.url == "https://www.themoviedb.org/tv/42"
 
 
+def test_show_without_tmdb_id_is_looked_up_by_tvdb(monkeypatch):
+    episode = show_episode()
+    show = episode.parent.parent
+    show.tmdb_id, show.tvdb_id = None, "76568"
+    monkeypatch.setattr(notify, "_tmdb_for_tvdb", lambda i: {"76568": "4586"}.get(i))
+
+    assert Notice(event="E", title="t").with_item(episode, "https://s").url == "https://s/tv/4586"
+
+    show.tvdb_id = "1"
+    assert Notice(event="E", title="t").with_item(episode).url == (
+        "https://thetvdb.com/dereferrer/series/1"
+    )
+
+
 def test_discord_gets_embed_and_others_get_apprise(monkeypatch):
     posted, apprised = [], []
 

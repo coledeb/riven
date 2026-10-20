@@ -55,14 +55,43 @@ class Notice:
             top = top.parent
 
         self.image = self.image or getattr(top, "poster_path", None)
+        kind = "movie" if getattr(top, "type", None) == "movie" else "tv"
         tmdb_id = getattr(top, "tmdb_id", None)
+        tvdb_id = getattr(top, "tvdb_id", None)
 
-        if self.url is None and tmdb_id:
-            kind = "movie" if getattr(top, "type", None) == "movie" else "tv"
+        if self.url is not None:
+            return self
+
+        if not tmdb_id and kind == "tv" and tvdb_id:
+            tmdb_id = _tmdb_for_tvdb(str(tvdb_id))
+
+        if tmdb_id:
             base = link_base.rstrip("/") or "https://www.themoviedb.org"
             self.url = f"{base}/{kind}/{tmdb_id}"
+        elif tvdb_id:
+            self.url = f"https://thetvdb.com/dereferrer/series/{tvdb_id}"
 
         return self
+
+
+_tmdb_ids = dict[str, str | None]()
+
+
+def _tmdb_for_tvdb(tvdb_id: str) -> str | None:
+    """Shows only store a TVDB id; Seerr links need the TMDB one."""
+
+    if tvdb_id not in _tmdb_ids:
+        try:
+            from kink import di
+
+            from program.apis.tmdb_api import TMDBApi
+
+            _tmdb_ids[tvdb_id] = di[TMDBApi].find_id("tv", "tvdb_id", tvdb_id)
+        except Exception as e:
+            logger.debug(f"Notification: no TMDB id for TVDB {tvdb_id}: {e}")
+            return None
+
+    return _tmdb_ids[tvdb_id]
 
 
 def item_title(item: "MediaItem") -> str:
