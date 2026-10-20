@@ -104,9 +104,9 @@ Please see the [upstream Riven README](https://github.com/rivenmedia/riven#readm
 > [!NOTE]
 > For DUMB stack users, you will need to change your config for both Riven's Frontend and Backend like so:
 > - **Riven Frontend:** Set `repo_owner` to `coledeb`, `branch_enabled` to `true`, and `branch` to `main`. This uses my [Riven Frontend fork](https://github.com/coledeb/riven-frontend) (current upstream Frontend plus a reworked settings page), which is the Frontend this fork is built and tested with.
->   - Updating the Frontend **WILL** break the embedded UI in DUMB, as DUMB currently expects an older pinned version. See the [instructions](https://github.com/coledeb/riven/blob/main/scripts/DUMB-EMBEDDED-UI.md) in this repo's [scripts](https://github.com/coledeb/riven/tree/main/scripts) folder for more information on this, as well as a fix.
+>   - Updating the Frontend **WILL** break the embedded UI in DUMB, as DUMB currently expects an older pinned version. See the [instructions](https://github.com/coledeb/riven/blob/main/scripts/DUMB.md#1-riven-frontend-in-dumbs-embedded-ui) in this repo's [scripts](https://github.com/coledeb/riven/tree/main/scripts) folder for more information on this, as well as a fix.
 > - **Riven Backend:** Set `repo_owner` to `coledeb`, `repo_name` to `riven`, `branch_enabled` to `true`, and `branch` to `main`.
->   - It can lose its settings after a DUMB container restart followed by a Riven update (a DUMB bug with its data symlink). See [DUMB-RIVEN-DATA.md](https://github.com/coledeb/riven/blob/main/scripts/DUMB-RIVEN-DATA.md) for the cause and a fix.
+>   - It can lose its settings after a DUMB container restart followed by a Riven update (a DUMB bug with its data symlink). See [DUMB.md](https://github.com/coledeb/riven/blob/main/scripts/DUMB.md#2-riven-backend-loses-its-settings) in the same folder for the cause and a fix.
 > - I also recommend setting `auto_update`  to `true`, and `auto_update_mode` to at least `check_only`; I am actively pushing updates as I work on the fork.
 
 I will possibly consider issues or pull requests on this fork, but I offer no guarantee of this.

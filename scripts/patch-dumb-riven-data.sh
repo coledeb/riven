@@ -18,7 +18,7 @@
 #    settings, stop Riven Backend, move the stray dir aside
 #    (/riven/backend/data.stray-<time>), relink, start Riven Backend.
 #
-# See DUMB-RIVEN-DATA.md next to this file.
+# See DUMB.md next to this file.
 #
 # Usage: patch-dumb-riven-data.sh [--wait]   (--wait: wait up to 15 min for DUMB)
 #        DUMB_CONTAINER=<name> if your container isn't called "DUMB".

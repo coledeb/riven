@@ -21,7 +21,7 @@
 # Idempotent: does nothing if already patched. The patch lives in the container
 # layer, so it is lost when the container is recreated (DUMB image update);
 # dumb-embed-watch.service reruns this script whenever the DUMB container starts.
-# See DUMB-EMBEDDED-UI.md next to this file.
+# See DUMB.md next to this file.
 #
 # Usage: patch-dumb-embed.sh [--wait]   (--wait: wait up to 15 min for DUMB to be up)
 #        DUMB_CONTAINER=<name> if your container isn't called "DUMB".
