@@ -31,7 +31,8 @@ URL = "https://cdn.example/dld/file?token=t"
 class SlowBody(httpx.AsyncByteStream):
     """Serves the range in 256 KB pieces with a little latency, like a CDN."""
 
-    stall_at: int | None = None  # byte offset where the CDN stalls once
+    stall_at: int | None = None  # byte offset where the CDN fails once
+    stall_error: type[Exception] = httpx.ReadTimeout
 
     def __init__(self, start: int, end: int):
         self.start, self.end = start, end
@@ -42,7 +43,7 @@ class SlowBody(httpx.AsyncByteStream):
             await trio.sleep(0.01)
             if SlowBody.stall_at is not None and pos >= SlowBody.stall_at:
                 SlowBody.stall_at = None
-                raise httpx.ReadTimeout("stalled")
+                raise SlowBody.stall_error("stalled")
             piece = DATA[pos : min(pos + 256 * 1024, self.end + 1)]
             pos += len(piece)
             yield piece
@@ -156,6 +157,7 @@ def run_play(*args) -> list[Exception]:
             return trio.run(play, *args)
         finally:
             SlowBody.stall_at = None
+            SlowBody.stall_error = httpx.ReadTimeout
 
 
 def test_overlapping_sequential_reads_are_all_served():
@@ -186,6 +188,14 @@ def test_seeking_forward_and_back_with_reads_in_flight():
 def test_cdn_stall_mid_body_reconnects_instead_of_killing_the_stream():
     # A read timeout while reading the body used to make the stream fail every later read.
     SlowBody.stall_at = 6 * MB
+    errors = run_play(8, 128 * 1024, 16 * MB)
+
+    assert not errors, [type(e).__name__ for e in errors][:5]
+
+
+def test_connection_reset_mid_body_reconnects():
+    SlowBody.stall_at = 6 * MB
+    SlowBody.stall_error = httpx.ReadError  # "Connection reset by peer"
     errors = run_play(8, 128 * 1024, 16 * MB)
 
     assert not errors, [type(e).__name__ for e in errors][:5]

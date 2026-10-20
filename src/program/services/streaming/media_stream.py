@@ -63,10 +63,15 @@ class _CallerError(Exception):
 
 
 def _body_read_error(error: Exception, provider: str) -> Exception:
-    """A CDN that stalls or drops the connection mid-body becomes a recoverable error,
+    """A CDN that stalls, resets or drops the connection mid-body becomes a recoverable error,
     so the stream reconnects instead of dying with every later read failing."""
 
-    network_errors = (httpx.RemoteProtocolError, httpx.TimeoutException)
+    # NetworkError covers resets (ReadError) and other socket failures.
+    network_errors = (
+        httpx.NetworkError,
+        httpx.RemoteProtocolError,
+        httpx.TimeoutException,
+    )
     dropped = isinstance(error, network_errors)
 
     if isinstance(error, ExceptionGroup):
