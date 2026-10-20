@@ -1,5 +1,5 @@
 [Unit]
-Description=Re-apply the DUMB embedded-UI patch for Riven Frontend when the DUMB container starts
+Description=Re-apply the DUMB patches for Riven (embedded UI, data symlink) when the DUMB container starts
 After=default.target
 
 [Service]
@@ -7,7 +7,8 @@ Type=simple
 # Set this if your container isn't called "DUMB" (also change "container=DUMB" below).
 Environment=DUMB_CONTAINER=DUMB
 # Check once at start (catches a recreate while this was down), then on every DUMB container start.
-ExecStart=/bin/bash -c '%h/.local/bin/patch-dumb-embed.sh --wait; docker events --filter container=DUMB --filter event=start --format "{{.Time}}" | while read -r _; do %h/.local/bin/patch-dumb-embed.sh --wait; done'
+# Both scripts run in parallel; each waits for DUMB itself. A script that isn't installed is skipped.
+ExecStart=/bin/bash -c 'run() { for s in patch-dumb-embed.sh patch-dumb-riven-data.sh; do [ -x %h/.local/bin/$s ] && %h/.local/bin/$s --wait & done; wait; }; run; docker events --filter container=DUMB --filter event=start --format "{{.Time}}" | while read -r _; do run; done'
 Restart=always
 RestartSec=30
 

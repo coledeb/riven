@@ -18,7 +18,7 @@ All of these are handled in `/dumb/frontend/.output/server/chunks/nitro/nitro.mj
 - **`patch-dumb-embed.sh`** turns both special cases off and, for (3), has DUMB's proxy rewrite `Origin` to `http://localhost:3000` on Riven Frontend requests, but only when it matches the address you're browsing, so forms posted from other sites are still rejected. For (4), it redirects exactly `/ui/riven_frontend` to `/ui/riven_frontend/`. It keeps the original as `nitro.mjs.orig`. Then it restarts "DUMB Frontend" through DUMB's API, using a 2-minute token that DUMB's own code creates inside the container. No password is needed and the token is never printed.
   - If the patch is already in place, it does nothing.
   - If DUMB has changed that code (for example after an update that fixes it), it logs a warning and changes nothing.
-- **`dumb-embed-watch.service`** is a systemd user service. The patch lives in the container's writable layer, so it is lost when the container is recreated (for example by a DUMB image update). The service runs the script once when it starts, then again every time the DUMB container starts. Each time, the script waits for DUMB's API before patching.
+- **`dumb-embed-watch.service`** is a systemd user service. It also runs [`patch-dumb-riven-data.sh`](DUMB-RIVEN-DATA.md) if that's installed. The patch lives in the container's writable layer, so it is lost when the container is recreated (for example by a DUMB image update). The service runs the script once when it starts, then again every time the DUMB container starts. Each time, the script waits for DUMB's API before patching.
 
 Restarting DUMB Frontend only reloads DUMB's dashboard. It doesn't touch Riven or your other services.
 
