@@ -570,7 +570,10 @@ class TorBoxAccountImport:
             return None
 
         item = result.media_items[0]
-        item.store_state()
+
+        # A new show gets only what was added in DMM: everything starts paused
+        # and _fill links the torrent's episodes. A Seerr request resumes the rest.
+        item.store_state(States.Paused if isinstance(item, Show) else None)
         item = session.merge(item)
         session.commit()
 

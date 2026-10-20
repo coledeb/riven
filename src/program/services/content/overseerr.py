@@ -124,7 +124,11 @@ class Overseerr(Runner[OverseerrModel]):
                     s
                     for s in show.seasons
                     if s.number in item.requested_seasons
-                    and s.last_state == States.Paused
+                    and (
+                        s.last_state == States.Paused
+                        # Partly paused, e.g. a show added from one DMM episode
+                        or any(e.last_state == States.Paused for e in s.episodes)
+                    )
                 ]
 
                 if not seasons:

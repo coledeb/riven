@@ -168,6 +168,36 @@ def test_show_gap_only_for_episodes_without_a_file():
     assert not has_gap(show, pack("Show.S01E02.1080p.mkv", infohash="b" * 40))
 
 
+def test_new_show_starts_paused_and_keeps_only_the_imported_episode(
+    importer, monkeypatch
+):
+    show = make_show()
+    show.seasons.append(Season({"number": 2, "episodes": [Episode({"number": 1})]}))
+    indexer = SimpleNamespace(run=lambda _item: iter([SimpleNamespace(media_items=[show])]))
+    program = SimpleNamespace(services=SimpleNamespace(indexer=indexer))
+    monkeypatch.setattr(TorBoxAccountImport, "_program", staticmethod(lambda: program))
+    session = SimpleNamespace(merge=lambda item: item, commit=lambda: None)
+
+    item = importer._create(session, Match(kind="show", title="Show", tvdb_id="1"))
+
+    assert item is show
+    episodes = [e for s in show.seasons for e in s.episodes]
+    assert all(e.last_state == States.Paused for e in episodes)
+
+    # What _fill does after linking S01E02
+    e2 = show.seasons[0].episodes[1]
+    with_file(e2, "a" * 40)
+    e2.store_state(States.Downloaded)
+    for season in show.seasons:
+        season.store_state()
+    show.store_state()
+
+    assert show.seasons[0].episodes[0].last_state == States.Paused
+    assert show.seasons[0].last_state == States.Downloaded
+    assert show.seasons[1].last_state == States.Paused
+    assert show.last_state == States.Downloaded
+
+
 def test_movie_gap():
     movie = Movie({"title": "Film", "tmdb_id": "1"})
     movie.last_state = States.Indexed
