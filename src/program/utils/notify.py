@@ -26,7 +26,7 @@ GREEN = 3066993  # available
 RED = 15158332  # failed
 
 BOT_NAME = "Riven"
-BOT_AVATAR = "https://raw.githubusercontent.com/rivenmedia/riven-frontend/main/static/android-chrome-192x192.png"
+BOT_AVATAR = "https://raw.githubusercontent.com/coledeb/riven/main/assets/riven-discord-avatar.png"
 
 DISCORD_HTTPS = re.compile(
     r"^https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/(\d+)/([\w-]+)"
