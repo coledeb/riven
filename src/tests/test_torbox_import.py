@@ -11,7 +11,7 @@ from program.media.item import Episode, Movie, Season, Show
 from program.media.media_entry import MediaEntry
 from program.media.models import ActiveStream
 from program.media.state import States
-from program.media.stream import Stream
+from program.media.stream import BlacklistReason, Stream
 from program.services.downloaders import torbox_import
 from program.services.downloaders.torbox import TorBoxNotFound
 from program.services.downloaders.torbox_import import Match, TorBoxAccountImport
@@ -418,6 +418,30 @@ def test_replace_targets_are_episodes_with_a_file_from_another_torrent():
 
     TorBoxAccountImport._unblacklist([e1], "a" * 40)
     assert e1.blacklisted_streams == []
+
+
+def test_readded_torrent_lifts_its_torrent_removed_blacklist():
+    show = make_show()
+    e1, e2 = show.seasons[0].episodes
+    e1.last_state = e2.last_state = States.Indexed
+    torrent = pack("Show.S01E01.1080p.mkv", "Show.S01E02.1080p.mkv")
+
+    def stream(infohash):
+        s = Stream.__mapper__.class_manager.new_instance()
+        s.infohash = infohash
+        return s
+
+    # e1 used this torrent until it was deleted from the account; e2 had it
+    # blacklisted for another reason, which a re-add must not lift
+    e1.blacklist_stream(stream("a" * 40), BlacklistReason.TORRENT_REMOVED)
+    e2.blacklist_stream(stream("a" * 40), BlacklistReason.CDN_HOST_DOWN)
+    e1.blacklist_stream(stream("b" * 40), BlacklistReason.TORRENT_REMOVED)
+
+    TorBoxAccountImport._release_removed(show, "a" * 40)
+
+    assert [s.infohash for s in e1.blacklisted_streams] == ["b" * 40]
+    assert [s.infohash for s in e2.blacklisted_streams] == ["a" * 40]
+    assert TorBoxAccountImport._has_gap(show, torrent)
 
 
 def test_replace_targets_only_episodes_in_the_torrent():

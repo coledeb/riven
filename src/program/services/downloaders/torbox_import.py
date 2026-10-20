@@ -461,6 +461,10 @@ class TorBoxAccountImport:
             if self._busy(session, item.id):
                 return None
 
+            # Deleting a torrent blacklists it on its items; adding it back
+            # (e.g. remove + re-add in DMM) shouldn't keep them from using it
+            self._release_removed(item, infohash)
+
             targets = (
                 self._replace_targets(item, torrent)
                 if self.settings.replace_existing
@@ -659,6 +663,25 @@ class TorBoxAccountImport:
                     targets[episode.id] = episode
 
         return list(targets.values())
+
+    @staticmethod
+    def _release_removed(item: Movie | Show, infohash: str) -> None:
+        """Lift blacklistings of this torrent made only because it left the account."""
+
+        items: list[Movie | Episode] = (
+            [item]
+            if isinstance(item, Movie)
+            else [e for season in item.seasons for e in season.episodes]
+        )
+
+        for i in items:
+            for entry in list(i.blacklist_entries):
+                if (
+                    entry.released_at is None
+                    and entry.reason == BlacklistReason.TORRENT_REMOVED.value
+                    and entry.stream.infohash.lower() == infohash
+                ):
+                    i.unblacklist_stream(entry.stream)
 
     @staticmethod
     def _unblacklist(targets: list[Movie | Episode], infohash: str) -> None:
