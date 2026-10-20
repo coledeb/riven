@@ -24,10 +24,11 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
-from apprise import Apprise
 from loguru import logger
 
+from program.settings import settings_manager
 from program.utils import data_dir_path
+from program.utils.notify import PURPLE, RED, Notice, item_title, notice_for_item, send
 from program.utils.request import CircuitBreakerOpen
 
 if TYPE_CHECKING:
@@ -282,7 +283,18 @@ class UncachedDownloads:
             f"{download.title}\nThe next candidate (if any) is tried."
         )
         logger.warning(f"TorBox: {message}")
-        self._notify("Riven: uncached download given up", message)
+        self._notify(
+            notice_for_item(
+                Notice(
+                    event="Uncached Download Failed",
+                    title=download.item_name,
+                    description="TorBox gave up on this download; the next candidate (if any) is tried.",
+                    color=RED,
+                    fields=[("Reason", reason), ("Torrent", download.title)],
+                ),
+                download.item_id,
+            )
+        )
 
         return Check("failed", infohash=download.infohash)
 
@@ -346,25 +358,25 @@ class UncachedDownloads:
             f"Seeders reported: {stream.seeders} · download slot {busy + 1}/{slots}"
         )
         logger.info(f"Started uncached TorBox download: {message}")
-        self._notify("Riven: uncached download started", message)
+        self._notify(
+            Notice(
+                event="Uncached Download Started",
+                title=item_title(item),
+                description="Not cached on TorBox, so TorBox is downloading it.",
+                color=PURPLE,
+                fields=[
+                    ("Seeders", str(stream.seeders)),
+                    ("Download Slot", f"{busy + 1}/{slots}"),
+                    ("Torrent", stream.raw_title),
+                ],
+            ).with_item(item, settings_manager.settings.notifications.link_url)
+        )
 
         return Check("wait", run_at=self._next_check())
 
     def _next_check(self) -> datetime:
         return datetime.now() + timedelta(minutes=self.settings.check_minutes)
 
-    def _notify(self, title: str, message: str) -> None:
-        urls = self.settings.notify_urls
-
-        if not urls:
-            return
-
-        try:
-            apprise = Apprise()
-
-            for url in urls:
-                apprise.add(url)
-
-            apprise.notify(title=title, body=message)
-        except Exception as e:
-            logger.debug(f"TorBox: uncached download notification failed: {e}")
+    def _notify(self, notice: Notice) -> None:
+        if self.settings.notify_urls:
+            send(self.settings.notify_urls, notice)

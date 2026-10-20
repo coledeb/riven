@@ -212,7 +212,7 @@ def test_several_torrents_slow_at_once_only_notifies(monitor):
     monitor.check()
 
     assert [c[0] for c in monitor.calls] == ["notify"]
-    assert "connection or debrid service problem" in monitor.calls[0][1]
+    assert "connection or debrid service problem" in monitor.calls[0][1].description
 
     # Still slow a minute later: no second message
     monitor.clock.now += 60
@@ -246,7 +246,7 @@ def test_still_slow_on_another_server_only_notifies(monitor):
     monitor.check()
 
     assert [c[0] for c in monitor.calls] == ["fresh", "notify"]
-    assert "two different servers" in monitor.calls[1][1]
+    assert "two different servers" in monitor.calls[1][1].description
 
 
 def test_transcoded_session_stalls_trigger_refresh_then_replacement(

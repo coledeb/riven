@@ -3,7 +3,6 @@
 import json
 from datetime import datetime
 
-from apprise import Apprise
 from loguru import logger
 
 from program.managers.sse_manager import sse_manager
@@ -12,6 +11,7 @@ from program.media.state import States
 from program.settings import settings_manager
 from program.core.runner import Runner
 from program.settings.models import NotificationsModel
+from program.utils.notify import GREEN, Notice, item_title, send
 
 
 class NotificationService(Runner[NotificationsModel, None, None]):
@@ -19,7 +19,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
     Unified notification service that handles all notification types:
     - SSE state change notifications (real-time UI updates)
     - SSE completion notifications (frontend notification popups)
-    - External notifications via Apprise (Discord, etc.)
+    - External notifications (Seerr-style Discord embeds, Apprise for the rest)
     """
 
     def __init__(self):
@@ -27,36 +27,11 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
         self.initialized = False
         self.settings = settings_manager.settings.notifications
-        self.apprise = Apprise()
-        self._initialize_apprise()
         self.initialized = True
 
     @classmethod
     def get_key(cls) -> str:
         return "notifications"
-
-    def _initialize_apprise(self):
-        """Initialize Apprise with configured service URLs."""
-
-        if not self.settings.enabled:
-            logger.debug("Notifications are disabled in settings")
-            return
-
-        for service_url in self.settings.service_urls:
-            try:
-                # Add markdown format for Discord webhooks
-                if "discord" in service_url:
-                    service_url = f"{service_url}?format=markdown"
-                self.apprise.add(service_url)
-                logger.debug(f"Added notification service: {service_url[:50]}...")
-            except Exception as e:
-                logger.debug(f"Failed to add service URL {service_url}: {e}")
-                continue
-
-        if len(self.apprise) > 0:
-            logger.success(
-                f"NotificationService initialized with {len(self.apprise)} service(s)"
-            )
 
     def validate(self) -> bool:
         """Validate that the notification service is properly configured."""
@@ -169,7 +144,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
     def _send_external_notification(self, item: MediaItem):
         """
-        Send external notifications via Apprise (Discord, etc.).
+        Send external notifications (Discord embeds, Apprise for the rest).
 
         Args:
             item: The MediaItem to notify about
@@ -181,23 +156,17 @@ class NotificationService(Runner[NotificationsModel, None, None]):
             )
             return
 
-        # Build notification message
-        title = f"Riven completed a {item.type.title()}!"
-        body = (
-            f"**{item.log_string}** ({item.aired_at.year})"
-            if item.aired_at
-            else f"**{item.log_string}**"
-        )
+        kind = item.type.title()
+        notice = Notice(
+            event=f"{kind} Now Available",
+            title=item_title(item),
+            description=f"Riven completed this {item.type}.",
+            color=GREEN,
+            fields=[("Requested Via", item.requested_by or "")],
+        ).with_item(item, self.settings.link_url)
 
-        # Send via Apprise
-        try:
-            if len(self.apprise) > 0:
-                self.apprise.notify(title=title, body=body)
-                logger.debug(f"External notification sent for {item.log_string}")
-            else:
-                logger.debug("No external notification services configured")
-        except Exception as e:
-            logger.debug(f"Failed to send external notification: {e}")
+        send(self.settings.service_urls, notice)
+        logger.debug(f"External notification sent for {item.log_string}")
 
     def _notify_generic(self, title: str, body: str):
         """
@@ -214,11 +183,4 @@ class NotificationService(Runner[NotificationsModel, None, None]):
             logger.debug("Notifications disabled, skipping generic notification")
             return
 
-        try:
-            if len(self.apprise) > 0:
-                self.apprise.notify(title=title, body=body)
-                logger.debug(f"Generic notification sent: {title}")
-            else:
-                logger.debug("No external notification services configured")
-        except Exception as e:
-            logger.debug(f"Failed to send generic notification: {e}")
+        send(self.settings.service_urls, Notice(event="Riven", title=title, description=body))

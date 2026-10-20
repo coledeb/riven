@@ -1242,6 +1242,10 @@ class NotificationsModel(Observable):
         default_factory=list,
         description="Notification service URLs (e.g., Discord webhooks)",
     )
+    link_url: str = Field(
+        default="",
+        description="Base URL for title links in Discord embeds, e.g. your Seerr address (links go to <url>/movie/<tmdb id> and /tv/<tmdb id>); empty links to TMDB",
+    )
 
 
 class SubtitleProviderConfig(Observable):

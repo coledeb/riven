@@ -184,7 +184,7 @@ def test_unmatched_torrent_notifies_once(importer):
     importer._unmatched(torrent, "no TMDB movie called 'Mystery'")
 
     assert len(importer.sent) == 1
-    assert "Mystery" in importer.sent[0]
+    assert importer.sent[0].title == "Mystery"
 
 
 class FakeTorBox:

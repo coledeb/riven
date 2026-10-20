@@ -28,11 +28,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
-from apprise import Apprise
 from kink import di
 from loguru import logger
 
 from program.settings import settings_manager
+from program.utils.notify import ORANGE, RED, Notice, notice_for_item, send
 
 # Timing samples are dropped after this long, and files with no activity forgotten.
 HISTORY_SECONDS = 600
@@ -312,7 +312,14 @@ class SlowStreamMonitor:
 
         if now - self._outage_notified >= OUTAGE_NOTIFY_SECONDS:
             self._outage_notified = now
-            self._notify(message)
+            self._notify(
+                Notice(
+                    event="Connection Problem",
+                    title="Slow streams, nothing replaced",
+                    description=message,
+                    color=RED,
+                )
+            )
 
     def _handle(self, file: SlowFile, now: float) -> None:
         refreshed = self._refreshed.get(file.key)
@@ -398,7 +405,22 @@ class SlowStreamMonitor:
             except Exception as e:
                 message = f"{summary}, but stopping the Plex playback failed ({e}); not replaced"
                 logger.warning(f"Slow streams: {message}")
-                self._notify(message)
+                self._notify(
+                    notice_for_item(
+                        Notice(
+                            event="Slow Stream Not Replaced",
+                            title=file.title,
+                            description="Too slow to play, but stopping the Plex playback failed.",
+                            color=RED,
+                            fields=[
+                                ("Reason", file.reason),
+                                ("Server", file.stats.host or ""),
+                                ("Error", str(e)),
+                            ],
+                        ),
+                        file.item_id,
+                    )
+                )
                 return
 
         program = self._program()
@@ -423,7 +445,18 @@ class SlowStreamMonitor:
 
         message = f"{summary}. Stopped the Plex playback and finding another copy."
         logger.info(f"Slow streams: {message}")
-        self._notify(message)
+        self._notify(
+            notice_for_item(
+                Notice(
+                    event="Slow Stream Replaced",
+                    title=file.title,
+                    description="Too slow to play. Stopped the Plex playback and finding another copy.",
+                    color=ORANGE,
+                    fields=[("Reason", file.reason), ("Server", file.stats.host or "")],
+                ),
+                file.item_id,
+            )
+        )
 
         # Another torrent on the account may cover the item already
         if not account_import.offer(file.item_id):
@@ -475,21 +508,9 @@ class SlowStreamMonitor:
             self._program().services.updater.library_path, path.lstrip("/")
         )
 
-    def _notify(self, message: str) -> None:
-        urls = self.settings.notify_urls
-
-        if not urls:
-            return
-
-        try:
-            apprise = Apprise()
-
-            for url in urls:
-                apprise.add(url)
-
-            apprise.notify(title="Riven: slow stream", body=message)
-        except Exception as e:
-            logger.warning(f"Slow streams: notification failed: {e}")
+    def _notify(self, notice: Notice) -> None:
+        if self.settings.notify_urls:
+            send(self.settings.notify_urls, notice)
 
 
 slow_stream_monitor_instance = SlowStreamMonitor()

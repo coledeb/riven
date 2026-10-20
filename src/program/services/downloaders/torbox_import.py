@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from apprise import Apprise
 from kink import di
 from loguru import logger
 from RTN import normalize_title, parse
@@ -43,6 +42,7 @@ from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.media_entry import MediaEntry
 from program.media.stream import BlacklistReason
+from program.utils.notify import ORANGE, RED, Notice, send
 from program.media.state import States
 from program.services.downloaders.models import DownloadedTorrent
 from program.services.downloaders.torbox import TorBoxNotFound
@@ -430,8 +430,13 @@ class TorBoxAccountImport:
         if tid not in self._notified:
             self._notified.add(tid)
             self._notify(
-                f'Couldn\'t match TorBox torrent "{name}" to a title ({reason}). '
-                "Link it in Riven with a manual magnet."
+                Notice(
+                    event="TorBox Import Unmatched",
+                    title=name,
+                    description="Couldn't match this TorBox torrent to a title. Link it in Riven with a manual magnet.",
+                    color=ORANGE,
+                    fields=[("Reason", reason)],
+                )
             )
 
     # --- linking ---
@@ -761,7 +766,14 @@ class TorBoxAccountImport:
                 "not resetting anything (probably a TorBox API problem)"
             )
             logger.warning(f"TorBox import: {message}")
-            self._notify(message)
+            self._notify(
+                Notice(
+                    event="TorBox Import Paused",
+                    title=f"{len(missing)} torrents missing from TorBox",
+                    description="That many at once is probably a TorBox API problem, so nothing was reset.",
+                    color=RED,
+                )
+            )
             return set()
 
         gone = list[str]()
@@ -867,21 +879,9 @@ class TorBoxAccountImport:
             if em.add_event(Event(EVENT_SOURCE, item_id)):
                 self._pending_events.discard(item_id)
 
-    def _notify(self, message: str) -> None:
-        urls = self.settings.notify_urls
-
-        if not urls:
-            return
-
-        try:
-            apprise = Apprise()
-
-            for url in urls:
-                apprise.add(url)
-
-            apprise.notify(title="Riven: TorBox import", body=message)
-        except Exception as e:
-            logger.warning(f"TorBox import: notification failed: {e}")
+    def _notify(self, notice: Notice) -> None:
+        if self.settings.notify_urls:
+            send(self.settings.notify_urls, notice)
 
     def _load_state(self) -> None:
         if self._loaded:

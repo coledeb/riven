@@ -211,7 +211,7 @@ def test_cached_stream_wins_over_better_seeded_uncached(tb, leeching):
 
 def test_uncached_download_starts_as_last_resort_and_notifies(tb, leeching, settings, monkeypatch):
     sent = []
-    monkeypatch.setattr(tb.uncached, "_notify", lambda title, msg: sent.append(msg))
+    monkeypatch.setattr(tb.uncached, "_notify", sent.append)
     few = stream(FEW_SEEDS, 3)
     good = stream(LEECH, 40)
     item = movie([few, good])
@@ -222,8 +222,8 @@ def test_uncached_download_starts_as_last_resort_and_notifies(tb, leeching, sett
     assert leeching.uncached_adds == [LEECH]
     assert result.run_at is not None  # waits for the download
     assert item.blacklisted == [(FEW_SEEDS, BlacklistReason.NOT_CACHED)]
-    assert "Seeders reported: 40" in sent[0]
-    assert "download slot 1/5" in sent[0]
+    assert dict(sent[0].fields)["Seeders"] == "40"
+    assert dict(sent[0].fields)["Download Slot"] == "1/5"
     saved = json.loads((torbox_uncached.data_dir_path / torbox_uncached.STATE_FILE).read_text())
     assert saved["1"]["infohash"] == LEECH and saved["1"]["seeders"] == 40
 
@@ -258,7 +258,7 @@ def test_finished_download_is_used(tb, leeching):
 
 def test_stalled_download_is_dropped_and_next_candidate_started(tb, leeching, settings, monkeypatch):
     sent = []
-    monkeypatch.setattr(tb.uncached, "_notify", lambda title, msg: sent.append(title))
+    monkeypatch.setattr(tb.uncached, "_notify", lambda n: sent.append(n.event))
     item = movie([stream(LEECH, 40), stream(LEECH_2, 12)])
     downloader = make_downloader(tb)
     run(downloader, item)
@@ -274,9 +274,9 @@ def test_stalled_download_is_dropped_and_next_candidate_started(tb, leeching, se
     assert leeching.uncached_adds == [LEECH, LEECH_2]
     assert result.run_at is not None
     assert sent == [
-        "Riven: uncached download started",
-        "Riven: uncached download given up",
-        "Riven: uncached download started",
+        "Uncached Download Started",
+        "Uncached Download Failed",
+        "Uncached Download Started",
     ]
 
 
