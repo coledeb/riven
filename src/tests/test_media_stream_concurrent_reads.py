@@ -31,6 +31,8 @@ URL = "https://cdn.example/dld/file?token=t"
 class SlowBody(httpx.AsyncByteStream):
     """Serves the range in 256 KB pieces with a little latency, like a CDN."""
 
+    stall_at: int | None = None  # byte offset where the CDN stalls once
+
     def __init__(self, start: int, end: int):
         self.start, self.end = start, end
 
@@ -38,6 +40,9 @@ class SlowBody(httpx.AsyncByteStream):
         pos = self.start
         while pos <= self.end:
             await trio.sleep(0.01)
+            if SlowBody.stall_at is not None and pos >= SlowBody.stall_at:
+                SlowBody.stall_at = None
+                raise httpx.ReadTimeout("stalled")
             piece = DATA[pos : min(pos + 256 * 1024, self.end + 1)]
             pos += len(piece)
             yield piece
@@ -147,7 +152,10 @@ def run_play(*args) -> list[Exception]:
         di[ChunkCacheNotifier] = ChunkCacheNotifier()
         # Emitters are class-level; drop "cached" flags left by an earlier test's cache.
         ChunkCacheNotifier.emitters.clear()
-        return trio.run(play, *args)
+        try:
+            return trio.run(play, *args)
+        finally:
+            SlowBody.stall_at = None
 
 
 def test_overlapping_sequential_reads_are_all_served():
@@ -171,5 +179,13 @@ def test_deep_read_window_is_all_served():
 def test_seeking_forward_and_back_with_reads_in_flight():
     # Scrub forward, then back to the start, with a window of reads in flight.
     errors = run_play(16, 128 * 1024, 8 * MB, (40 * MB, 4 * MB))
+
+    assert not errors, [type(e).__name__ for e in errors][:5]
+
+
+def test_cdn_stall_mid_body_reconnects_instead_of_killing_the_stream():
+    # A read timeout while reading the body used to make the stream fail every later read.
+    SlowBody.stall_at = 6 * MB
+    errors = run_play(8, 128 * 1024, 16 * MB)
 
     assert not errors, [type(e).__name__ for e in errors][:5]

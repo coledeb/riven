@@ -54,6 +54,34 @@ RATE_LIMIT_MAX_WAIT = 30.0
 _host_paused_until: dict[str, float] = {}
 
 
+class _CallerError(Exception):
+    """Carries an error raised by the caller of establish_connection past its retry handlers."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
+
+
+def _body_read_error(error: Exception, provider: str) -> Exception:
+    """A CDN that stalls or drops the connection mid-body becomes a recoverable error,
+    so the stream reconnects instead of dying with every later read failing."""
+
+    network_errors = (httpx.RemoteProtocolError, httpx.TimeoutException)
+    dropped = isinstance(error, network_errors)
+
+    if isinstance(error, ExceptionGroup):
+        matched, rest = error.split(network_errors)
+        dropped = matched is not None and rest is None
+
+    if not dropped:
+        return error
+
+    closed = DebridServiceClosedConnectionException(provider=provider)
+    closed.__cause__ = error
+
+    return closed
+
+
 def _retry_after_seconds(response: httpx.Response) -> float | None:
     """Seconds from a numeric Retry-After header, if present."""
 
@@ -872,9 +900,16 @@ class MediaStream:
 
                     self.session_statistics.total_session_connections += 1
 
-                    yield stream
+                    try:
+                        yield stream
+                    except Exception as e:
+                        # Raised by the caller while reading the body, not while
+                        # connecting: don't retry here (a generator can't yield twice).
+                        raise _CallerError(_body_read_error(e, self.provider)) from None
 
                     return
+            except _CallerError as e:
+                raise e.error from e.error.__cause__
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
 

@@ -64,6 +64,7 @@
 > - **Failed downloads are remembered.** When every candidate torrent fails, their blacklist entries are now saved and the item moves on to re-scraping, instead of retrying the same torrents.
 > - **Calendar works.** `GET /api/v1/calendar` no longer returns 500.
 > - **Overlapping reads don't stall playback.** Samba and kernel readahead keep several reads in flight on one file; each now gets its chunks fetched (lowest first) instead of only the newest, which left the others waiting 30 s and erroring.
+> - **A CDN stall mid-file reconnects.** A read timeout or dropped connection while reading the body now reconnects the stream; before, the retry crashed ("generator didn't stop after athrow()") and every later read of that file failed, so Plex skipped to the next episode.
 > - **Real stream errors reported.** A failed first connection raises its real error, so the VFS returns the matching errno.
 > - **Episodes only take torrents from their season.** S15E12 no longer accepts S13E12 torrents.
 > - **Plex doesn't re-check every folder.** VFS folders keep their modified time until their contents change.
