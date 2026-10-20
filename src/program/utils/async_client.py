@@ -21,7 +21,10 @@ class AsyncClient(httpx.AsyncClient):
 
     def __init__(self) -> None:
         super().__init__(
-            http2=True,
+            # HTTP/1.1: one TCP connection per stream. Over HTTP/2, every file on one
+            # CDN host shares a connection and its flow-control window, so a file Plex
+            # stops reading for a while starves the others until they time out.
+            http2=False,
             follow_redirects=True,
             limits=httpx.Limits(
                 max_keepalive_connections=100,
