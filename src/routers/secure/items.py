@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session, object_session
 from program.db import db_functions
 from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
-from program.media.stream import BlacklistReason
+from program.media.stream import BlacklistReason, StreamBlacklistRelation
 from program.media.state import States
 from program.types import Event
 from program.program import Program
@@ -144,6 +144,93 @@ class StateResponse(BaseModel):
 )
 async def get_states() -> StateResponse:
     return StateResponse(states=[state._name_ for state in States], success=True)
+
+
+class RecentBlacklistEntry(BaseModel):
+    item_id: int = Field(description="The movie or episode the torrent is blacklisted for")
+    item_type: str
+    title: str = Field(description="Movie or show title")
+    item_label: str | None = Field(description="e.g. S01E02 for an episode, else None")
+    top_item_id: int = Field(description="The movie or show, for linking")
+    tmdb_id: str | None
+    tvdb_id: str | None
+    stream_id: int
+    infohash: str
+    raw_title: str
+    resolution: str | None
+    reason: str = Field(description="Why it was blacklisted (unknown for old entries)")
+    blacklisted_at: datetime | None
+    expires_at: datetime | None = Field(description="None = permanent")
+    released_at: datetime | None = Field(description="Set once expired and back in the pool")
+    strikes: int
+
+
+class RecentBlacklistResponse(BaseModel):
+    entries: list[RecentBlacklistEntry]
+
+
+@router.get(
+    "/blacklist",
+    summary="Get Recent Blacklist Entries",
+    description="Blacklistings across the whole library, newest first, including released ones.",
+    operation_id="get_recent_blacklist",
+    response_model=RecentBlacklistResponse,
+)
+async def get_recent_blacklist(
+    limit: Annotated[int, Query(description="Max entries", ge=1, le=1000)] = 200,
+    include_released: Annotated[
+        bool, Query(description="Include entries that expired and were released")
+    ] = True,
+) -> RecentBlacklistResponse:
+    query = select(StreamBlacklistRelation).order_by(
+        StreamBlacklistRelation.blacklisted_at.desc().nulls_last(),
+        StreamBlacklistRelation.id.desc(),
+    )
+
+    if not include_released:
+        query = query.where(StreamBlacklistRelation.released_at.is_(None))
+
+    entries: list[RecentBlacklistEntry] = []
+
+    with db_session() as session:
+        for e in session.execute(query.limit(limit)).scalars():
+            item = session.get(MediaItem, e.media_item_id)
+
+            if not item:
+                continue
+
+            label = None
+            top: MediaItem = item
+
+            if isinstance(item, Episode) and item.parent:
+                label = f"S{item.parent.number or 0:02d}E{item.number or 0:02d}"
+                top = item.parent.parent or item
+            elif isinstance(item, Season):
+                label = f"Season {item.number}"
+                top = item.parent or item
+
+            entries.append(
+                RecentBlacklistEntry(
+                    item_id=item.id,
+                    item_type=item.type,
+                    title=top.title or top.log_string,
+                    item_label=label,
+                    top_item_id=top.id,
+                    tmdb_id=top.tmdb_id,
+                    tvdb_id=top.tvdb_id,
+                    stream_id=e.stream.id,
+                    infohash=e.stream.infohash,
+                    raw_title=e.stream.raw_title,
+                    resolution=e.stream.resolution,
+                    reason=e.reason or str(BlacklistReason.UNKNOWN),
+                    blacklisted_at=e.blacklisted_at,
+                    expires_at=e.expires_at,
+                    released_at=e.released_at,
+                    strikes=e.strikes,
+                )
+            )
+
+    return RecentBlacklistResponse(entries=entries)
 
 
 class ItemsResponse(BaseModel):
