@@ -87,9 +87,9 @@ So after the first restart, **every Riven Backend reinstall** breaks it again. `
 **What `patch-dumb-riven-data.sh` does:**
 
 - **Patch:** in `utils/transactional_install.py`, both places first try the path as given and only then resolve it, like `utils/download.py` already does. The symlink then stays excluded. DUMB loads this file when it starts, so the patch takes effect at the **next DUMB container restart**.
-- **Repair:** if `/riven/backend/data` isn't the symlink to `/data/riven` but `/data/riven/settings.json` exists, it stops Riven Backend through DUMB's API (5-minute token), moves the stray folder to `/riven/backend/data.stray-<time>`, puts the symlink back and starts Riven Backend. If the link is fine, it does nothing.
+- **Repair:** once DUMB reports its startup finished (never during its own Riven install, which would clear the link again), if `/riven/backend/data` isn't the symlink to `/data/riven` but `/data/riven/settings.json` exists, it stops Riven Backend through DUMB's API (5-minute token), moves the stray folder to `/riven/backend/data.stray-<time>`, puts the symlink back and starts Riven Backend. If the link is fine, it does nothing.
 
-After a recreate, DUMB's first start reinstalls Riven with the unpatched code; the script then patches DUMB and repairs the link, so Riven runs on default settings for a few minutes at most.
+After a recreate, DUMB's first start reinstalls Riven with the unpatched code and the link is lost again. Riven Backend then fails to start (the fresh install folder belongs to root) and Riven Frontend fails with "BACKEND_API_KEY environment variable is required" until the script, once DUMB's startup is over (a few minutes), repairs the link and starts Riven Backend. Start Riven Frontend in DUMB afterwards if it's still down, or restart the container once more, which also clears DUMB's "degraded" status and loads the patch.
 
 ## Undo
 
