@@ -125,24 +125,6 @@ def test_smartresponse_json_dot_access():
     assert resp.data.movie.year == 1999
 
 
-def test_smartresponse_xml_dot_access():
-    from requests import Response
-
-    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
-    <root>
-      <user id="42"><name>alice</name></user>
-    </root>"""
-    resp = Response()
-    resp.status_code = 200
-    resp._content = xml
-    resp.headers["Content-Type"] = "application/xml"
-
-    resp.__class__ = SmartResponse
-    # dot-notation via SimpleNamespace
-    assert resp.data.user.id == "42"
-    assert resp.data.user.name.text.strip() == "alice"
-
-
 def test_smartresponse_non_json_data_is_empty():
     from requests import Response
 

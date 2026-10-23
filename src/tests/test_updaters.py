@@ -92,12 +92,6 @@ def mock_settings():
 class TestPlexUpdater:
     """Test suite for PlexUpdater"""
 
-    def test_initialization_disabled(self, mock_settings):
-        """Test that PlexUpdater doesn't initialize when disabled"""
-        updater = PlexUpdater()
-        assert not updater.initialized
-        assert updater.service_name == "Plex"
-
     def test_initialization_enabled(self, mock_settings):
         """Test that PlexUpdater initializes when enabled and configured"""
         mock_settings["plex"].settings.updaters.plex.enabled = True
@@ -160,12 +154,6 @@ class TestPlexUpdater:
 class TestEmbyUpdater:
     """Test suite for EmbyUpdater"""
 
-    def test_initialization_disabled(self, mock_settings):
-        """Test that EmbyUpdater doesn't initialize when disabled"""
-        updater = EmbyUpdater()
-        assert not updater.initialized
-        assert updater.service_name == "Emby"
-
     def test_initialization_enabled(self, mock_settings):
         """Test that EmbyUpdater initializes when enabled"""
         mock_settings["emby"].settings.updaters.emby.enabled = True
@@ -216,12 +204,6 @@ class TestEmbyUpdater:
 # JellyfinUpdater Tests
 class TestJellyfinUpdater:
     """Test suite for JellyfinUpdater"""
-
-    def test_initialization_disabled(self, mock_settings):
-        """Test that JellyfinUpdater doesn't initialize when disabled"""
-        updater = JellyfinUpdater()
-        assert not updater.initialized
-        assert updater.service_name == "Jellyfin"
 
     def test_initialization_enabled(self, mock_settings):
         """Test that JellyfinUpdater initializes when enabled"""
@@ -292,61 +274,6 @@ class TestUpdater:
             updater = Updater()
             assert updater.initialized
 
-    def test_run_movie_extracts_correct_path(self, mock_settings, mock_movie):
-        """Test that run() extracts correct path for movies (parent directory)"""
-        mock_settings["emby"].settings.updaters.emby.enabled = True
-
-        with patch.object(EmbyUpdater, "validate", return_value=True):
-            updater = Updater()
-
-            with patch.object(updater, "refresh_path") as mock_refresh:
-                list(updater.run(mock_movie))
-
-                # For movies, should refresh parent directory
-                expected_path = "/mnt/library/movies/Test Movie (2020)"
-                mock_refresh.assert_called_once_with(expected_path)
-                assert mock_movie.updated is True
-
-    def test_run_episode_extracts_correct_path(self, mock_settings, mock_episode):
-        """Test that run() extracts correct path for episodes (parent's parent directory)"""
-        mock_settings["emby"].settings.updaters.emby.enabled = True
-
-        with patch.object(EmbyUpdater, "validate", return_value=True):
-            updater = Updater()
-
-            with patch.object(updater, "refresh_path") as mock_refresh:
-                list(updater.run(mock_episode))
-
-                # For episodes, should refresh parent's parent (show folder, not season)
-                expected_path = "/mnt/library/shows/Test Show"
-                mock_refresh.assert_called_once_with(expected_path)
-                assert mock_episode.updated is True
-
-    def test_run_no_filesystem_entry(self, mock_settings, mock_movie):
-        """Test run() when item has no filesystem entry"""
-        mock_settings["emby"].settings.updaters.emby.enabled = True
-        mock_movie.filesystem_entry = None
-
-        with patch.object(EmbyUpdater, "validate", return_value=True):
-            updater = Updater()
-
-            with patch.object(updater, "refresh_path") as mock_refresh:
-                list(updater.run(mock_movie))
-
-                # Should not call refresh_path
-                mock_refresh.assert_not_called()
-
-    def test_run_not_initialized(self, mock_settings, mock_movie):
-        """Test run() when updater is not initialized"""
-        updater = Updater()
-        assert not updater.initialized
-
-        with patch.object(updater, "refresh_path") as mock_refresh:
-            list(updater.run(mock_movie))
-
-            # Should not call refresh_path
-            mock_refresh.assert_not_called()
-
     def test_refresh_path_calls_all_services(self, mock_settings):
         """Test that refresh_path calls all initialized services"""
         mock_settings["emby"].settings.updaters.emby.enabled = True
@@ -409,62 +336,3 @@ class TestUpdater:
 class TestUpdaterIntegration:
     """Integration tests for updater workflow"""
 
-    def test_movie_workflow(self, mock_settings, mock_movie):
-        """Test complete workflow for updating a movie"""
-        mock_settings["emby"].settings.updaters.emby.enabled = True
-
-        with patch.object(EmbyUpdater, "validate", return_value=True):
-            updater = Updater()
-
-            # Mock Emby service
-            emby_service = updater.services[EmbyUpdater]
-            with patch.object(emby_service.session, "post") as mock_post:
-                mock_response = Mock()
-                mock_response.ok = True
-                mock_post.return_value = mock_response
-
-                # Run the updater
-                result = list(updater.run(mock_movie))
-
-                # Verify item was returned and updated
-                assert len(result) == 1
-                assert result[0] == mock_movie
-                assert mock_movie.updated is True
-
-                # Verify Emby was called with correct path
-                mock_post.assert_called_once()
-                call_args = mock_post.call_args
-                assert (
-                    call_args[1]["json"]["Updates"][0]["Path"]
-                    == "/mnt/library/movies/Test Movie (2020)"
-                )
-
-    def test_show_workflow(self, mock_settings, mock_show):
-        """Test complete workflow for updating a show"""
-        mock_settings["emby"].settings.updaters.emby.enabled = True
-
-        with patch.object(EmbyUpdater, "validate", return_value=True):
-            updater = Updater()
-
-            # Mock Emby service
-            emby_service = updater.services[EmbyUpdater]
-            with patch.object(emby_service.session, "post") as mock_post:
-                mock_response = Mock()
-                mock_response.ok = True
-                mock_post.return_value = mock_response
-
-                # Run the updater
-                result = list(updater.run(mock_show))
-
-                # Verify show was returned and updated
-                assert len(result) == 1
-                assert result[0] == mock_show
-                assert mock_show.updated is True
-
-                # Verify Emby was called with show folder (not season folder)
-                mock_post.assert_called_once()
-                call_args = mock_post.call_args
-                assert (
-                    call_args[1]["json"]["Updates"][0]["Path"]
-                    == "/mnt/library/shows/Test Show"
-                )

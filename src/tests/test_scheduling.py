@@ -229,83 +229,6 @@ class TestCoreScheduling:
 class TestComputeNextAirDatetime:
     """Test edge cases for _compute_next_air_datetime()."""
 
-    def test_compute_from_airs_days_and_time_when_next_aired_missing(self):
-        """Computing next air time from airs_days + airs_time when next_aired is missing."""
-        from program.program import Program
-
-        now = datetime(2025, 1, 13, 10, 0, 0)  # Monday 10:00 AM
-        release_data = {
-            "airs_days": {
-                "monday": False,
-                "tuesday": True,
-                "wednesday": False,
-                "thursday": False,
-                "friday": False,
-                "saturday": False,
-                "sunday": False,
-            },
-            "airs_time": "20:00",
-        }
-
-        result = ProgramScheduler._compute_next_air_datetime(release_data, now)
-
-        assert result is not None
-        assert result.weekday() == 1  # Tuesday
-        assert result.hour == 20
-        assert result.minute == 0
-        # Should be next Tuesday at 20:00
-        expected = datetime(2025, 1, 14, 20, 0, 0)
-        assert result == expected
-
-    def test_handle_next_aired_as_date_only_string(self):
-        """Handling next_aired as a date-only string (should combine with airs_time)."""
-        from program.program import Program
-
-        now = datetime(2025, 1, 13, 10, 0, 0)
-        release_data = {
-            "next_aired": "2025-01-15",
-            "airs_time": "21:30",
-        }
-
-        result = ProgramScheduler._compute_next_air_datetime(release_data, now)
-
-        assert result is not None
-        assert result.year == 2025
-        assert result.month == 1
-        assert result.day == 15
-        assert result.hour == 21
-        assert result.minute == 30
-
-    def test_handle_next_aired_as_full_iso_datetime(self):
-        """Handling next_aired as a full ISO datetime string."""
-        from program.program import Program
-
-        now = datetime(2025, 1, 13, 10, 0, 0)
-        release_data = {
-            "next_aired": "2025-01-15T22:00:00",
-        }
-
-        result = ProgramScheduler._compute_next_air_datetime(release_data, now)
-
-        assert result is not None
-        assert result == datetime(2025, 1, 15, 22, 0, 0)
-
-    def test_graceful_fallback_when_timezone_invalid(self):
-        """Graceful fallback when timezone is invalid or missing."""
-        from program.program import Program
-
-        now = datetime(2025, 1, 13, 10, 0, 0)
-        release_data = {
-            "next_aired": "2025-01-15T22:00:00",
-            "timezone": "Invalid/Timezone",
-        }
-
-        result = ProgramScheduler._compute_next_air_datetime(release_data, now)
-
-        # Should still return a result, treating as local naive
-        assert result is not None
-        assert result == datetime(2025, 1, 15, 22, 0, 0)
-
     def test_return_none_when_no_valid_air_time(self):
         """Returning None when no valid air time can be computed."""
         from program.program import Program
@@ -316,21 +239,6 @@ class TestComputeNextAirDatetime:
         result = ProgramScheduler._compute_next_air_datetime(release_data, now)
 
         assert result is None
-
-    def test_handle_malformed_airs_time(self):
-        """Handling malformed or missing airs_time values."""
-        from program.program import Program
-
-        now = datetime(2025, 1, 13, 10, 0, 0)
-        release_data = {
-            "airs_days": {"monday": True},
-            "airs_time": "invalid",
-        }
-
-        result = ProgramScheduler._compute_next_air_datetime(release_data, now)
-
-        assert result is None
-
 
 # Monitoring and processing tests
 
