@@ -61,29 +61,28 @@ jobs:
           -f description="Checking upstream merged into main"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.check_ref || needs.sync.outputs.check_sha }}
+          ref: main
+          path: base
           persist-credentials: false
-      # Same checks as upstream's Verify workflow.
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          python-version-file: pyproject.toml
+          ref: ${{ inputs.check_ref || needs.sync.outputs.check_sha }}
+          path: pr
+          persist-credentials: false
+      # Upstream's Verify checks (pyright), counted on both sides.
       - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-          activate-environment: true
       - name: Install pre-requisites
         run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
-      - name: Install the project
-        run: uv sync --locked --all-extras --dev
-      - uses: jakebailey/pyright-action@v1
-        with:
-          pylance-version: latest-release
+      - name: Compare errors with main
+        id: compare
+        run: python3 base/.github/scripts/compare_checks.py base pr
       - name: Report result
         if: always() && env.HEAD_SHA
         env:
           JOB_STATUS: ${{ job.status }}
+          RESULT: ${{ steps.compare.outputs.result || 'Checks did not finish' }}
         run: |
           if [ "$JOB_STATUS" = success ]; then state=success; else state=failure; fi
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
             -f state="$state" -f context="Upstream sync checks" -f target_url="$RUN_URL" \
-            -f description="Checks on upstream merged into main: $JOB_STATUS"
+            -f description="$RESULT"
