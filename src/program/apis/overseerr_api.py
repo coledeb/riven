@@ -211,6 +211,25 @@ class OverseerrAPI:
 
             skip += 100
 
+    def has_request(self, kind: ItemType, tmdb_id: str) -> bool:
+        """Whether Seerr will post its own Media Available for this title.
+
+        Seerr announces every non-4K request that isn't declined: pending ones
+        are approved once the media turns available, failed ones still complete.
+        """
+
+        response = self.session.get(f"api/v1/{kind}/{tmdb_id}", timeout=15)
+
+        if response.status_code == 404:
+            return False
+
+        if not response.ok:
+            raise OverseerrAPIError(f"{kind} lookup failed: {response.status_code}")
+
+        requests = (response.json().get("mediaInfo") or {}).get("requests") or []
+
+        return any(r.get("status") != 3 and not r.get("is4k") for r in requests)
+
     def _as_user(self, user_id: int) -> dict[str, str]:
         return {"X-Api-User": str(user_id)} if user_id else {}
 

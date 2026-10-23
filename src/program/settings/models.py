@@ -1246,6 +1246,10 @@ class NotificationsModel(Observable):
         default="",
         description="Base URL for title links in Discord embeds, e.g. your Seerr address (links go to <url>/movie/<tmdb id> and /tv/<tmdb id>); empty links to TMDB",
     )
+    skip_seerr_requests: bool = Field(
+        default=False,
+        description="Only announce items Seerr won't: skip the 'Now Available' message when the item has a Seerr request (Seerr posts its own Media Available for those)",
+    )
 
 
 class SubtitleProviderConfig(Observable):

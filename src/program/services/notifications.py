@@ -3,15 +3,17 @@
 import json
 from datetime import datetime
 
+from kink import di
 from loguru import logger
 
+from program.apis.overseerr_api import OverseerrAPI
 from program.managers.sse_manager import sse_manager
 from program.media.item import Episode, MediaItem, Season
 from program.media.state import States
 from program.settings import settings_manager
 from program.core.runner import Runner
 from program.settings.models import NotificationsModel
-from program.utils.notify import GREEN, Notice, item_title, send
+from program.utils.notify import GREEN, Notice, _tmdb_for_tvdb, item_title, send
 
 
 class NotificationService(Runner[NotificationsModel, None, None]):
@@ -156,6 +158,12 @@ class NotificationService(Runner[NotificationsModel, None, None]):
             )
             return
 
+        if self.settings.skip_seerr_requests and self._seerr_announces(item):
+            logger.debug(
+                f"Skipping external notification for {item.log_string} (Seerr announces its request)"
+            )
+            return
+
         kind = item.type.title()
         notice = Notice(
             event=f"{kind} Now Available",
@@ -167,6 +175,36 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
         send(self.settings.service_urls, notice)
         logger.debug(f"External notification sent for {item.log_string}")
+
+    def _seerr_announces(self, item: MediaItem) -> bool:
+        """
+        Whether Seerr will post its own Media Available for this item.
+
+        Asks Seerr whether the title has a request; if Seerr can't be asked,
+        falls back to whether the item came from the Seerr content source.
+
+        Args:
+            item: The completed MediaItem
+        """
+        from_seerr = item.requested_by == "overseerr"
+
+        if OverseerrAPI not in di:
+            return from_seerr
+
+        kind = "movie" if item.type == "movie" else "tv"
+        tmdb_id = item.tmdb_id
+
+        if not tmdb_id and kind == "tv" and item.tvdb_id:
+            tmdb_id = _tmdb_for_tvdb(str(item.tvdb_id))
+
+        if not tmdb_id:
+            return from_seerr
+
+        try:
+            return di[OverseerrAPI].has_request(kind, str(tmdb_id))
+        except Exception as e:
+            logger.warning(f"Seerr request lookup failed for {item.log_string}: {e}")
+            return from_seerr
 
     def _notify_generic(self, title: str, body: str):
         """
