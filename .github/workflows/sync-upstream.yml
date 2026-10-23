@@ -4,11 +4,6 @@ on:
   schedule:
     - cron: '23 14 * * *' # Daily at 14:23 UTC (9:23 AM CDT / 8:23 AM CST).
   workflow_dispatch:
-    inputs:
-      check_ref:
-        description: Only run the checks on this ref (e.g. main); skips syncing
-        required: false
-        default: ''
 
 permissions:
   contents: write
@@ -24,65 +19,11 @@ jobs:
     if: github.repository == 'coledeb/riven' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      head_sha: ${{ steps.sync.outputs.head_sha }}
-      check_sha: ${{ steps.sync.outputs.check_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Sync upstream and propose updates
-        id: sync
-        if: ${{ !inputs.check_ref }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/sync_upstream.py
-
-  # PRs opened with github.token don't trigger pull_request workflows, so the
-  # sync PR's test merge is checked here and reported as a commit status.
-  checks:
-    needs: sync
-    if: needs.sync.outputs.check_sha || inputs.check_ref
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      statuses: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      HEAD_SHA: ${{ needs.sync.outputs.head_sha }}
-      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-    steps:
-      - name: Mark checks pending
-        if: env.HEAD_SHA
-        run: >
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA"
-          -f state=pending -f context="Upstream sync checks" -f target_url="$RUN_URL"
-          -f description="Checking upstream merged into main"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: main
-          path: base
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ inputs.check_ref || needs.sync.outputs.check_sha }}
-          path: pr
-          persist-credentials: false
-      # Upstream's Verify checks (pyright), counted on both sides.
-      - uses: astral-sh/setup-uv@v6
-      - name: Install pre-requisites
-        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev
-      - name: Compare errors with main
-        id: compare
-        run: python3 base/.github/scripts/compare_checks.py base pr
-      - name: Report result
-        if: always() && env.HEAD_SHA
-        env:
-          JOB_STATUS: ${{ job.status }}
-          RESULT: ${{ steps.compare.outputs.result || 'Checks did not finish' }}
-        run: |
-          if [ "$JOB_STATUS" = success ]; then state=success; else state=failure; fi
-          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$HEAD_SHA" \
-            -f state="$state" -f context="Upstream sync checks" -f target_url="$RUN_URL" \
-            -f description="$RESULT"

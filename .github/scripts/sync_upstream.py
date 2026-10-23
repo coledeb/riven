@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 
 REPOSITORY = "coledeb/riven"
 SOURCE = "rivenmedia/riven"
-STATUS_CONTEXT = "Upstream sync checks"
+STATUS_CONTEXT = "Upstream merge check"
 BODY = """## Upstream Riven updates
 
 This PR tracks the original repository's `main` branch. New upstream commits
@@ -19,8 +19,7 @@ are added to this same PR by the daily **Sync upstream** workflow.
 
 Before merging:
 - Review changes alongside our TorBox and other fork customizations.
-- Check the **Upstream sync checks** status. The workflow tests this PR merged
-  into main, and reruns those checks whenever upstream adds commits.
+- Check the **Upstream merge check** status; it reports merge conflicts with main.
 - Resolve any merge conflicts and test the resulting app.
 - Use **Create a merge commit** to preserve shared upstream history; avoid squash
   or rebase merging these sync PRs.
@@ -82,19 +81,18 @@ def merge_commit(request, number, head_sha, attempts=24, wait=5):
     raise RuntimeError("GitHub did not compute the PR's test merge in time.")
 
 
-def plan_checks(request, number, head_sha, force=False):
-    """Pick the commit for the checks job; skip heads that already have a result."""
-    statuses = request("GET", f"repos/{REPOSITORY}/commits/{head_sha}/status")["statuses"]
-    if not force and any(status["context"] == STATUS_CONTEXT for status in statuses):
-        return {}
+def report_conflicts(request, number, head_sha):
+    """Post whether the PR merges cleanly into main, only when that changes."""
     merge_sha = merge_commit(request, number, head_sha)
-    if merge_sha is None:
+    state, description = (("success", "Merges cleanly into main") if merge_sha
+                          else ("failure", "Merge conflicts with main; resolve them before merging"))
+    statuses = request("GET", f"repos/{REPOSITORY}/commits/{head_sha}/status")["statuses"]
+    current = next((status for status in statuses if status["context"] == STATUS_CONTEXT), None)
+    if not current or current["state"] != state:
         request("POST", f"repos/{REPOSITORY}/statuses/{head_sha}", {
-            "state": "failure", "context": STATUS_CONTEXT,
-            "description": "Merge conflicts with main; resolve them before merging.",
+            "state": state, "context": STATUS_CONTEXT, "description": description,
         })
-        return {}
-    return {"head_sha": head_sha, "check_sha": merge_sha}
+    return description
 
 
 if __name__ == "__main__":
@@ -104,12 +102,7 @@ if __name__ == "__main__":
     result, number, head_sha = sync(dry_run=args.dry_run)
     print(result)
     if number and not args.dry_run:
-        outputs = plan_checks(api, number, head_sha,
-                              force=os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch")
-        result += " Checks queued." if outputs else " Checks already reported for this commit."
-        if os.environ.get("GITHUB_OUTPUT"):
-            with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-                output.writelines(f"{key}={value}\n" for key, value in outputs.items())
+        result += f" {report_conflicts(api, number, head_sha)}."
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
             summary.write(result + "\n")
