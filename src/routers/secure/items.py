@@ -1581,6 +1581,8 @@ async def reindex_item(
                 bubble_parents=True,
             )
 
+            session.commit()
+
             logger.info(f"Successfully re-indexed {item.log_string}")
 
             di[Program].em.add_event(Event("RetryItem", item.id))
