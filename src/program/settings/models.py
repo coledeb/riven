@@ -638,6 +638,15 @@ class PlexLibraryModel(Observable):
             "Leave empty when Plex sees the same paths as Riven."
         ),
     )
+    remove_replaced_versions: bool = Field(
+        default=False,
+        description=(
+            "After Riven swaps a file for a new one, remove the old version Plex keeps as "
+            "unavailable (in its trash) instead of waiting for Empty Trash. Only removes a "
+            "version whose file is gone from Riven's library while another version of the "
+            "same item is present. Needs Plex's 'Allow media deletion' setting."
+        ),
+    )
 
 
 class JellyfinLibraryModel(Observable):

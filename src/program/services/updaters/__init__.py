@@ -71,6 +71,7 @@ class Updater(Runner[None, BaseUpdater]):
         items = self.get_items_to_update(item)
         refreshed_paths = set[str]()  # Track refreshed paths to avoid duplicates
         rescan_paths = set[str]()  # Paths of files swapped in place
+        file_paths = list[str]()  # Files refreshed, for removing replaced versions
 
         for _item in items:
             # Get all VFS paths from the entry's helper method
@@ -98,6 +99,7 @@ class Updater(Runner[None, BaseUpdater]):
                 # Build absolute path to the file
                 abs_path = os.path.join(self.library_path, vfs_path.lstrip("/"))
                 refresh_path = os.path.dirname(abs_path)
+                file_paths.append(abs_path)
 
                 # Refresh the path in all services (skip if already refreshed)
                 if refresh_path not in refreshed_paths:
@@ -123,6 +125,11 @@ class Updater(Runner[None, BaseUpdater]):
         logger.info(
             f"Updated {item.log_string} ({len(refreshed_paths)} unique paths refreshed)"
         )
+
+        plex = self.services[PlexUpdater]
+
+        if file_paths and plex.initialized:
+            plex.schedule_version_cleanup(file_paths)
 
         if rescan_paths:
             logger.debug(
