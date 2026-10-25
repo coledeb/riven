@@ -621,3 +621,27 @@ def test_cleanup_skipped_when_database_unavailable(
     downloader.remove_unused()
 
     assert int(tid) in fake.torrents
+
+
+
+def test_account_refused_later_is_posted(fake, monkeypatch):
+    from program.utils import notify
+
+    recheck = TorBoxDownloader._recheck_plan
+    monkeypatch.setattr(TorBoxDownloader, "_recheck_plan", lambda self: None)
+    fake.user_response = httpx.ReadTimeout("slow")
+    downloader = TorBoxDownloader()
+    assert downloader.initialized
+
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda _urls, notice: sent.append(notice))
+    monkeypatch.setattr(
+        settings_manager.settings.downloaders.torbox.degraded_hold, "notify_urls", ["discord://1/x"]
+    )
+    fake.user_response = None
+    fake.plan = 0
+
+    recheck(downloader)
+
+    assert [n.event for n in sent] == ["TorBox Account Problem"]
+    assert dict(sent[0].fields)["TorBox said"] == "TorBox paid plan required"

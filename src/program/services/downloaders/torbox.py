@@ -272,6 +272,30 @@ class TorBoxDownloader(DownloaderBase):
 
         return True
 
+    def _notify_rejected(self, reason: str) -> None:
+        """Post that TorBox, unreachable at startup, turned out to refuse the account."""
+
+        from program.utils.notify import RED, Notice, send
+
+        urls = self.settings.degraded_hold.notify_urls
+
+        if urls:
+            send(
+                urls,
+                Notice(
+                    event="TorBox Account Problem",
+                    title="TorBox refused Riven's account",
+                    description=(
+                        "TorBox didn't answer when Riven started, so Riven loaded it "
+                        "anyway. Now it answers, and it refuses the account: nothing "
+                        "can be downloaded or streamed until the API key or plan is "
+                        "fixed and Riven is restarted."
+                    ),
+                    color=RED,
+                    fields=[("TorBox said", reason)],
+                ),
+            )
+
     def _check_plan(self, timeout: float) -> str | None:
         """
         None if the account has a paid plan, else why TorBox didn't answer.
@@ -314,6 +338,7 @@ class TorBoxDownloader(DownloaderBase):
                 problem = self._check_plan(30)
             except TorBoxRejected as e:
                 logger.error(f"{e}; TorBox requests will fail")
+                self._notify_rejected(str(e))
                 return
 
             if problem is None:
