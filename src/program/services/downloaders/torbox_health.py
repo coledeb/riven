@@ -114,7 +114,10 @@ class TorBoxHealth:
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        self._failures = deque[float]()
+        # (when, torrent id or None); one torrent failing over and over counts once
+        self._failures = deque[tuple[float, str | None]]()
+        # When TorBox API calls answered fine, to tell a few bad files from TorBox failing
+        self._successes = deque[float]()
         self._own_until = 0.0
         self._own_reason = ""
         self._own_count = 0
@@ -139,13 +142,37 @@ class TorBoxHealth:
 
     # --- signals ---
 
-    def record_failure(self, what: str) -> None:
-        """A TorBox API call failed (timeout, connection error, HTTP 5xx)."""
+    def record_failure(self, what: str, torrent_id: str | int | None = None) -> None:
+        """
+        A TorBox API call failed (timeout, connection error, HTTP 5xx). Pass the
+        torrent for calls about one torrent: repeated failures for the same
+        torrent count once, since that's more likely the torrent than TorBox.
+        """
+
+        torrent = str(torrent_id) if torrent_id is not None else None
 
         with self._lock:
-            self._failures.append(self._clock())
+            self._failures.append((self._clock(), torrent))
             self._last_failure = what
             self._evaluate()
+            counted, share = self._counted(self._clock())
+
+        logger.warning(
+            f"TorBox call failed: {what}"
+            + (f" (torrent {torrent})" if torrent else "")
+            + f"; {counted} counted in {self.settings.window_minutes} min, "
+            f"{share:.0%} of calls"
+        )
+
+    def record_success(self) -> None:
+        """A TorBox API call answered (not a 5xx)."""
+
+        with self._lock:
+            self._successes.append(self._clock())
+
+            # Bounded: only the window matters
+            while len(self._successes) > 10_000:
+                self._successes.popleft()
 
     def record_cdn_failure(self, host: str | None) -> None:
         """Streaming from a TorBox CDN server failed (timeout, connection error, 5xx)."""
@@ -169,27 +196,50 @@ class TorBoxHealth:
         settings = self.settings
         now = self._clock()
 
-        while self._failures and now - self._failures[0] > settings.window_minutes * 60:
-            self._failures.popleft()
+        self._trim(now)
 
         if not self._failures:
             return
 
         page = self._fresh_page(now)
-        # The page reporting API/Database trouble lowers the bar to one failure
-        needed = 1 if page and page.problems else settings.failures
-        last = self._failures[-1]
+        last = self._failures[-1][0]
         already = self._own_until > now
+        counted, share = self._counted(now)
 
-        if already or len(self._failures) >= needed:
+        if page and page.problems:
+            # The page reporting API/Database trouble lowers the bar to one failure
+            trips = True
+        else:
+            trips = counted >= settings.failures and share >= settings.min_failure_share
+
+        if already or trips:
             self._own_until = max(self._own_until, last + settings.clear_minutes * 60)
 
             if not already:
-                self._own_count = len(self._failures)
+                self._own_count = counted
                 self._own_reason = (
-                    f"{len(self._failures)} TorBox API call(s) failed in "
-                    f"{settings.window_minutes} min (last: {self._last_failure})"
+                    f"{counted} TorBox API call(s) failed in "
+                    f"{settings.window_minutes} min, {share:.0%} of calls "
+                    f"(last: {self._last_failure})"
                 )
+
+    def _trim(self, now: float) -> None:
+        window = self.settings.window_minutes * 60
+
+        while self._failures and now - self._failures[0][0] > window:
+            self._failures.popleft()
+
+        while self._successes and now - self._successes[0] > window:
+            self._successes.popleft()
+
+    def _counted(self, now: float) -> tuple[int, float]:
+        """Failures in the window (each torrent once) and their share of all calls."""
+
+        self._trim(now)
+        torrents = {t for _, t in self._failures if t is not None}
+        counted = sum(1 for _, t in self._failures if t is None) + len(torrents)
+        calls = len(self._failures) + len(self._successes)
+        return counted, (len(self._failures) / calls if calls else 0.0)
 
     # --- state ---
 
@@ -241,13 +291,27 @@ class TorBoxHealth:
                 and now - failed <= settings.clear_minutes * 60
             )
 
-    def hold(self, what: str, host: str | None = None, provider: str = PROVIDER) -> bool:
+    def hold(
+        self,
+        what: str,
+        host: str | None = None,
+        provider: str = PROVIDER,
+        offline_server: bool = False,
+    ) -> bool:
         """
         Whether to skip a destructive action because TorBox is degraded. If so,
         it's logged and listed in the "recovered" notice.
+
+        offline_server: TorBox gave a link on a server it has pulled (0.0.0.0).
+        That's TorBox saying the file can't be streamed, so it's only held when
+        the status page reports TorBox or that server's region down (TorBox-wide
+        maintenance pulls every server; re-sourcing then would be pointless).
         """
 
-        if not self.holding(host, provider):
+        if offline_server:
+            if not self._offline_server_held(host, provider):
+                return False
+        elif not self.holding(host, provider):
             return False
 
         logger.info(f"TorBox degraded ({self.reason(host)}); kept {what}")
@@ -259,6 +323,16 @@ class TorBoxHealth:
                 self._held.append(what)
 
         return True
+
+    def _offline_server_held(self, host: str | None, provider: str) -> bool:
+        if provider != PROVIDER or not self.settings.enabled:
+            return False
+
+        with self._lock:
+            page = self._fresh_page(self._clock())
+
+        region = region_of(host)
+        return bool(page and (page.problems or (region and region in page.regions)))
 
     def reason(self, host: str | None = None) -> str:
         """Why TorBox counts as degraded, for messages."""

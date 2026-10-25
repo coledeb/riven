@@ -164,12 +164,14 @@ class VFSDatabase:
             except DebridServiceLinkUnavailable as e:
                 from program.services.downloaders.torbox_health import health
 
-                # TorBox degraded: an "offline server" or "not on the account"
-                # answer may be TorBox flaking; keep the file, try again later
+                # TorBox degraded: a "not on the account" answer may be TorBox
+                # flaking; keep the file, try again later. A pulled server is
+                # TorBox's own answer, held only if the status page says so.
                 if health.hold(
                     f"{entry.original_filename} (not re-sourced: {e.reason})",
                     host=e.host,
                     provider=entry.provider,
+                    offline_server=e.reason == BlacklistReason.CDN_HOST_DOWN.value,
                 ):
                     return None, False
 

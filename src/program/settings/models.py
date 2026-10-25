@@ -226,6 +226,16 @@ class TorBoxDegradedHoldModel(Observable):
     window_minutes: int = Field(
         default=15, ge=1, description="Window for counting failed API calls"
     )
+    min_failure_share: float = Field(
+        default=0.3,
+        ge=0,
+        le=1,
+        description=(
+            "...and only if at least this share of TorBox API calls in the window "
+            "failed. Repeated failures for the same torrent count once, so one "
+            "bad torrent (e.g. a season being scanned) doesn't trip it"
+        ),
+    )
     clear_minutes: int = Field(
         default=30,
         ge=5,

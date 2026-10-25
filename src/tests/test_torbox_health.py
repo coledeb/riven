@@ -99,6 +99,47 @@ def test_failures_in_the_window_turn_degraded_until_quiet(clocked):
     assert not clocked.degraded()
 
 
+def test_one_torrent_failing_over_and_over_counts_once(clocked):
+    # Plex scanning a season whose torrent sits on a pulled server
+    for _ in range(10):
+        clocked.record_failure("requestdl: Timeout", torrent_id=127384271)
+
+    assert not clocked.degraded()
+
+    clocked.record_failure("requestdl: Timeout", torrent_id=1)
+    assert not clocked.degraded()
+
+    clocked.record_failure("torrents/mylist: Timeout")
+    assert clocked.degraded()
+    assert "3 TorBox API call(s) failed" in clocked.reason()
+
+
+def test_failures_among_many_good_calls_dont_count(clocked):
+    for _ in range(20):
+        clocked.record_success()
+
+    for i in range(5):
+        clocked.record_failure("requestdl: Timeout", torrent_id=i)
+
+    assert not clocked.degraded()  # 5 of 25 = 20%
+
+    for i in range(5, 12):
+        clocked.record_failure("requestdl: Timeout", torrent_id=i)
+
+    assert clocked.degraded()  # 12 of 32 = 38%
+    assert "% of calls" in clocked.reason()
+
+
+def test_old_good_calls_drop_out_of_the_share(clocked):
+    for _ in range(100):
+        clocked.record_success()
+
+    clocked.clock.now += 16 * 60
+    degrade(clocked)
+
+    assert clocked.degraded()
+
+
 def test_spread_out_failures_dont_count(clocked):
     for _ in range(5):
         clocked.record_failure("slow drip")
@@ -335,6 +376,12 @@ def test_requestdl_5xx_for_a_file_still_there_counts(downloader, fake):  # noqa:
     for _ in range(3):
         assert downloader.unrestrict_link(downloader._file_link(existing_id, 0)) is None
 
+    # Counted, but one torrent failing over and over counts once
+    assert health._counted(time.time())[0] == 1
+    assert not health.degraded()
+
+    health.record_failure("requestdl: Timeout", torrent_id="other-1")
+    health.record_failure("requestdl: Timeout", torrent_id="other-2")
     assert health.degraded()
 
 
@@ -346,7 +393,7 @@ def test_dead_link_is_not_re_sourced_while_degraded(monkeypatch):
 
     def unrestrict(_link):
         raise DebridServiceLinkUnavailable(
-            provider="torbox", link="x", reason="cdn_host_down", host="nexus-1.cnam.tb-cdn.io"
+            provider="torbox", link="x", reason="torrent_removed"
         )
 
     service = SimpleNamespace(key="torbox", unrestrict_link=unrestrict)
@@ -364,6 +411,42 @@ def test_dead_link_is_not_re_sourced_while_degraded(monkeypatch):
     degrade()
 
     assert database._refresh_unrestricted_url(entry, session=None) == (None, False)
+
+
+def test_offline_server_is_re_sourced_while_degraded(monkeypatch):
+    from program.services.filesystem.vfs import db as vfs_db
+
+    def unrestrict(_link):
+        raise DebridServiceLinkUnavailable(
+            provider="torbox", link="x", reason="cdn_host_down", host="nexus-050.cnam.tb-cdn.io"
+        )
+
+    database = vfs_db.VFSDatabase.__new__(vfs_db.VFSDatabase)
+    database.downloader = SimpleNamespace(
+        services={"torbox": SimpleNamespace(key="torbox", unrestrict_link=unrestrict)}
+    )
+    entry = SimpleNamespace(
+        provider="torbox", download_url="x", original_filename="a.mkv", media_item=None
+    )
+    degrade()
+
+    # TorBox itself says the server is gone: not held, so it goes on to re-source
+    with pytest.raises(DebridServiceLinkUnavailable):
+        database._refresh_unrestricted_url(entry, session=None)
+
+
+def test_offline_server_is_held_when_the_page_reports_trouble(clocked):
+    host = "nexus-050.cnam.tb-cdn.io"
+    degrade(clocked)
+    assert not clocked.hold("a.mkv", host=host, offline_server=True)
+
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, regions={"cnam": "downtime"}))
+    assert clocked.hold("a.mkv", host=host, offline_server=True)
+    assert not clocked.hold("b.mkv", host="nexus-1.weur.tb-cdn.io", offline_server=True)
+
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "maintenance"}))
+    assert clocked.hold("b.mkv", host="nexus-1.weur.tb-cdn.io", offline_server=True)
+    assert not clocked.hold("b.mkv", host=host, provider="realdebrid", offline_server=True)
 
 
 def test_dead_link_on_a_degraded_cdn_region_is_kept(monkeypatch):

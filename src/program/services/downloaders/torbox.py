@@ -138,6 +138,21 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _torrent_of(kwargs: dict[str, Any]) -> str | None:
+    """The torrent a request is about, from its params or body, if any."""
+
+    for key in ("params", "json", "data"):
+        values = kwargs.get(key)
+
+        if isinstance(values, dict):
+            torrent = values.get("torrent_id") or values.get("id")
+
+            if torrent is not None:
+                return str(torrent)
+
+    return None
+
+
 def _host_offline(url: str) -> bool:
     """True if the URL's host resolves only to unspecified addresses (0.0.0.0 / ::)."""
 
@@ -408,14 +423,18 @@ class TorBoxDownloader(DownloaderBase):
                 time.sleep(1)
                 response = self.api.session.request(method, endpoint, **kwargs)
         except (exceptions.ConnectionError, exceptions.Timeout) as e:
-            health.record_failure(f"{endpoint}: {type(e).__name__}")
+            health.record_failure(f"{endpoint}: {type(e).__name__}", _torrent_of(kwargs))
             raise
 
         if response.status_code == 429:
             self._pause(kind, response)
 
         if response.status_code >= 500:
-            health.record_failure(f"{endpoint}: HTTP {response.status_code}")
+            health.record_failure(
+                f"{endpoint}: HTTP {response.status_code}", _torrent_of(kwargs)
+            )
+        elif response.status_code != 429:
+            health.record_success()
 
         try:
             body = response.json()
@@ -994,11 +1013,9 @@ class TorBoxDownloader(DownloaderBase):
                 timeout=15,
             )
         except Exception as e:
-            # The request URL carries the API key; log only the error type.
-            logger.debug(
-                f"TorBox link request failed for torrent {torrent_id} file {file_id}: {type(e).__name__}"
-            )
-            health.record_failure(f"requestdl: {type(e).__name__}")
+            # The request URL carries the API key; log only the error type
+            # (record_failure logs it, with the torrent)
+            health.record_failure(f"requestdl file {file_id}: {type(e).__name__}", torrent_id)
             return None
 
         if response.status_code == 429:
@@ -1006,6 +1023,9 @@ class TorBoxDownloader(DownloaderBase):
                 self._pause("link", response)
 
             return None
+
+        if response.status_code < 500:
+            health.record_success()
 
         try:
             body = response.json()
@@ -1052,7 +1072,9 @@ class TorBoxDownloader(DownloaderBase):
 
         # The file is still there, so a 5xx here is TorBox failing, not a vanished file
         if response.status_code >= 500:
-            health.record_failure(f"requestdl: HTTP {response.status_code}")
+            health.record_failure(
+                f"requestdl file {file_id}: HTTP {response.status_code}", torrent_id
+            )
 
         return None
 
