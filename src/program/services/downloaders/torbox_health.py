@@ -1,0 +1,625 @@
+"""
+TorBox health: hold known-good files while TorBox is degraded
+(``downloaders.torbox.degraded_hold``), and follow TorBox's status page
+(``downloaders.torbox.status_page``).
+
+TorBox counts as degraded when ``failures`` API calls failed (timeouts,
+connection errors, HTTP 5xx; not 429 or a confirmed "not found") within
+``window_minutes``, until ``clear_minutes`` after the last one. (The API
+circuit breaker alone doesn't count: it also trips on 429 rate limits.) With
+``use_status_page``, the status page adds to that: API or Database not
+operational is degraded too, and a CDN region not operational holds files on
+that region's servers (``nexus-238.cnam.tb-cdn.io`` -> CNAM). The page can only
+add caution: "operational" there never ends degraded while Riven still sees
+failures, and a page that can't be read (or is stale) is ignored.
+
+While degraded, the places that would replace, blacklist or give up on
+something because of a TorBox error ask ``hold()`` first and skip it: slow
+source replacement, dead-link re-sourcing, download blacklisting, uncached
+download give-ups, and treating torrents missing from the account listing as
+deleted. Nothing is queued: the normal checks pick things up after recovery.
+
+The status page's incidents and maintenance can also be posted (``notify``):
+when one starts, every update, and when it's resolved.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+import requests
+from loguru import logger
+
+from program.settings import settings_manager
+from program.utils import data_dir_path
+from program.utils.notify import GREEN, ORANGE, PURPLE, RED, Notice, send
+
+PROVIDER = "torbox"
+
+# Status page resources whose trouble holds everything (the rest are other
+# services, or CDN regions that only hold files on their own servers).
+GLOBAL_RESOURCES = {"api", "database"}
+OK_STATES = {"operational"}
+
+# "nexus-238.cnam.tb-cdn.io" -> "cnam"
+REGION_HOST = re.compile(r"\.([a-z0-9]+)\.tb-cdn\.io$", re.IGNORECASE)
+
+# Degraded/recovered notices: a new "degraded" notice at most this often (flapping)
+NOTICE_GAP_SECONDS = 30 * 60
+# Held actions listed in the "recovered" notice
+HELD_LIST_LIMIT = 10
+PAGE_TIMEOUT = 10
+
+
+def region_of(host: str | None) -> str | None:
+    """The TorBox CDN region code of a host, lower case, or None."""
+
+    match = REGION_HOST.search(host or "")
+    return match[1].lower() if match else None
+
+
+@dataclass
+class PageStatus:
+    """What the status page said at one check."""
+
+    checked_at: float
+    # Global resources (API, Database) not operational: name -> status
+    problems: dict[str, str] = field(default_factory=dict)
+    # CDN regions not operational: region code -> status
+    regions: dict[str, str] = field(default_factory=dict)
+    # Open incident titles, for messages
+    incidents: list[str] = field(default_factory=list)
+
+
+class TorBoxHealth:
+    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failures = deque[float]()
+        self._own_until = 0.0
+        self._own_reason = ""
+        self._page: PageStatus | None = None
+        # Notices
+        self._announced = False
+        self._announced_at = -NOTICE_GAP_SECONDS
+        self._since: float | None = None
+        self._held = list[str]()
+        self._held_count = 0
+
+    @property
+    def settings(self):
+        return settings_manager.settings.downloaders.torbox.degraded_hold
+
+    @property
+    def page_settings(self):
+        return settings_manager.settings.downloaders.torbox.status_page
+
+    # --- signals ---
+
+    def record_failure(self, what: str) -> None:
+        """A TorBox API call failed (timeout, connection error, HTTP 5xx)."""
+
+        settings = self.settings
+        now = self._clock()
+
+        with self._lock:
+            self._failures.append(now)
+
+            while self._failures and now - self._failures[0] > settings.window_minutes * 60:
+                self._failures.popleft()
+
+            already = self._own_until > now
+
+            if already or len(self._failures) >= settings.failures:
+                self._own_until = now + settings.clear_minutes * 60
+
+                if not already:
+                    self._own_reason = (
+                        f"{len(self._failures)} TorBox API calls failed in "
+                        f"{settings.window_minutes} min (last: {what})"
+                    )
+
+    def set_page(self, page: PageStatus | None) -> None:
+        with self._lock:
+            if page is not None:
+                self._page = page
+
+    # --- state ---
+
+    def _fresh_page(self, now: float) -> PageStatus | None:
+        settings = self.settings
+        page = self._page
+
+        if not settings.use_status_page or page is None or not self.page_settings.url:
+            return None
+
+        # Ignore a page we haven't managed to read for a while
+        max_age = max(3 * self.page_settings.interval_minutes * 60, 15 * 60)
+        return page if now - page.checked_at <= max_age else None
+
+    def degraded(self) -> bool:
+        """TorBox as a whole is degraded (own failures, or API/Database on the page)."""
+
+        if not self.settings.enabled:
+            return False
+
+        now = self._clock()
+
+        with self._lock:
+            page = self._fresh_page(now)
+            return self._own_until > now or bool(page and page.problems)
+
+    def holding(self, host: str | None = None, provider: str = PROVIDER) -> bool:
+        """True if TorBox (or the CDN region of `host`) is degraded right now."""
+
+        if provider != PROVIDER or not self.settings.enabled:
+            return False
+
+        if self.degraded():
+            return True
+
+        region = region_of(host)
+
+        if not region:
+            return False
+
+        with self._lock:
+            page = self._fresh_page(self._clock())
+            return bool(page and region in page.regions)
+
+    def hold(self, what: str, host: str | None = None, provider: str = PROVIDER) -> bool:
+        """
+        Whether to skip a destructive action because TorBox is degraded. If so,
+        it's logged and listed in the "recovered" notice.
+        """
+
+        if not self.holding(host, provider):
+            return False
+
+        logger.info(f"TorBox degraded ({self.reason(host)}); kept {what}")
+
+        with self._lock:
+            self._held_count += 1
+
+            if len(self._held) < HELD_LIST_LIMIT:
+                self._held.append(what)
+
+        return True
+
+    def reason(self, host: str | None = None) -> str:
+        """Why TorBox counts as degraded, for messages."""
+
+        now = self._clock()
+        reasons = list[str]()
+
+        with self._lock:
+            if self._own_until > now:
+                reasons.append(self._own_reason)
+
+            page = self._fresh_page(now)
+
+            if page:
+                if page.problems:
+                    parts = ", ".join(f"{k} {v}" for k, v in page.problems.items())
+                    reasons.append(f"status page: {parts}")
+
+                region = region_of(host)
+
+                if region and region in page.regions:
+                    reasons.append(
+                        f"status page: {region.upper()} CDN {page.regions[region]}"
+                    )
+
+                if reasons and page.incidents:
+                    reasons.append(f"incident: {'; '.join(page.incidents)}")
+
+        return "; ".join(reasons) or "unknown"
+
+    # --- scheduled check ---
+
+    def check(self) -> None:
+        """Read the status page when due, and announce degraded / recovered."""
+
+        try:
+            status_page.run()
+        except Exception as e:
+            logger.debug(f"TorBox status page: check failed: {e}")
+
+        if not self.settings.enabled:
+            return
+
+        degraded = self.degraded()
+        now = self._clock()
+
+        if not degraded and self._since is None:
+            # Only CDN-region holds (logged as they happen); nothing to report
+            with self._lock:
+                self._held, self._held_count = [], 0
+
+            return
+
+        if degraded and self._since is None:
+            self._since = now
+            reason = self.reason()
+            logger.warning(f"TorBox is degraded ({reason}); holding files")
+
+            if now - self._announced_at >= NOTICE_GAP_SECONDS:
+                self._announced = True
+                self._announced_at = now
+                self._notify(
+                    Notice(
+                        event="TorBox Degraded",
+                        title="TorBox is degraded: holding files",
+                        description=(
+                            "Nothing is replaced, blacklisted or given up on because "
+                            "of TorBox errors until it recovers."
+                        ),
+                        color=ORANGE,
+                        fields=[("Reason", reason)],
+                        url=self.page_settings.url or None,
+                    )
+                )
+        elif not degraded and self._since is not None:
+            minutes = round((now - self._since) / 60)
+
+            with self._lock:
+                held, count = self._held, self._held_count
+                self._held, self._held_count = [], 0
+
+            logger.info(
+                f"TorBox recovered after {minutes} min; {count} action(s) were held"
+            )
+
+            if self._announced:
+                listed = "\n".join(held)
+
+                if count > len(held):
+                    listed += f"\n…and {count - len(held)} more"
+
+                self._notify(
+                    Notice(
+                        event="TorBox Recovered",
+                        title="TorBox recovered",
+                        description=(
+                            f"Degraded for about {minutes} min. Held actions are "
+                            "picked up by the normal checks."
+                        ),
+                        color=GREEN,
+                        fields=[("Held", listed or "nothing")],
+                        url=self.page_settings.url or None,
+                    )
+                )
+
+            self._since = None
+            self._announced = False
+
+    def _notify(self, notice: Notice) -> None:
+        if self.settings.notify_urls:
+            send(self.settings.notify_urls, notice)
+
+
+# --- status page ---
+
+_STATE_LABEL = {
+    "operational": "Operational",
+    "degraded": "Degraded",
+    "downtime": "Downtime",
+    "maintenance": "Maintenance",
+    "resolved": "Resolved",
+}
+
+
+def _time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _label(state: str | None) -> str:
+    return _STATE_LABEL.get(state or "", (state or "unknown").capitalize())
+
+
+@dataclass
+class Report:
+    """One incident or maintenance from the status page."""
+
+    id: str
+    title: str
+    maintenance: bool
+    state: str
+    starts_at: datetime | None
+    resolved: bool
+    affected: list[str]
+    # (id, published_at, message, state), oldest first
+    updates: list[tuple[str, datetime | None, str, str]]
+
+
+class TorBoxStatusPage:
+    """Reads TorBox's status page; feeds TorBoxHealth and posts incidents."""
+
+    def __init__(
+        self,
+        get: Callable[[str], Any] | None = None,
+        clock: Callable[[], float] = time.time,
+        state_file=None,
+    ) -> None:
+        self._get = get or (lambda url: requests.get(url, timeout=PAGE_TIMEOUT))
+        self._clock = clock
+        self._state_file = state_file or data_dir_path / "torbox_status.json"
+        self._last_run = 0.0
+        self._lock = threading.Lock()
+        self._state: dict[str, Any] | None = None
+
+    @property
+    def settings(self):
+        return settings_manager.settings.downloaders.torbox.status_page
+
+    def run(self) -> None:
+        settings = self.settings
+        hold = settings_manager.settings.downloaders.torbox.degraded_hold
+
+        if not settings.url or not (settings.notify or (hold.enabled and hold.use_status_page)):
+            return
+
+        now = self._clock()
+
+        if now - self._last_run < settings.interval_minutes * 60 - 5:
+            return
+
+        if not self._lock.acquire(blocking=False):
+            return
+
+        try:
+            self._last_run = now
+            response = self._get(f"{settings.url.rstrip('/')}/index.json")
+            response.raise_for_status()
+            data = response.json()
+            health.set_page(self.parse(data, now))
+            self.announce(data)
+        finally:
+            self._lock.release()
+
+    # --- parsing ---
+
+    @staticmethod
+    def _included(data: dict, kind: str) -> dict[str, dict]:
+        return {
+            str(x.get("id")): x
+            for x in data.get("included") or []
+            if x.get("type") == kind
+        }
+
+    def parse(self, data: dict, now: float) -> PageStatus:
+        page = PageStatus(checked_at=now)
+
+        for resource in self._included(data, "status_page_resource").values():
+            attributes = resource.get("attributes") or {}
+            name = str(attributes.get("public_name") or "")
+            state = str(attributes.get("status") or "operational").lower()
+
+            if state in OK_STATES:
+                continue
+
+            if name.lower() in GLOBAL_RESOURCES:
+                page.problems[name] = state
+            elif name.upper().endswith(" CDN"):
+                page.regions[name[:-4].strip().lower()] = state
+
+        page.incidents = [
+            r.title for r in self.reports(data) if not r.resolved and not r.maintenance
+        ]
+        return page
+
+    def reports(self, data: dict) -> list[Report]:
+        resources = {
+            key: (r.get("attributes") or {}).get("public_name") or key
+            for key, r in self._included(data, "status_page_resource").items()
+        }
+        updates = self._included(data, "status_update")
+        reports = list[Report]()
+
+        for key, report in self._included(data, "status_report").items():
+            attributes = report.get("attributes") or {}
+            state = str(attributes.get("aggregate_state") or "").lower()
+            ends_at = _time(attributes.get("ends_at"))
+            resolved = state == "resolved" or bool(
+                ends_at and ends_at <= datetime.now(timezone.utc)
+            )
+            ids = [
+                str(u.get("id"))
+                for u in ((report.get("relationships") or {}).get("status_updates") or {}).get("data") or []
+            ]
+            items = list[tuple[str, datetime | None, str, str]]()
+
+            for uid in ids:
+                update = (updates.get(uid) or {}).get("attributes") or {}
+                worst = _worst(update.get("affected_resources") or [])
+                items.append(
+                    (uid, _time(update.get("published_at")), str(update.get("message") or ""), worst)
+                )
+
+            items.sort(key=lambda u: u[1] or datetime.min.replace(tzinfo=timezone.utc))
+            reports.append(
+                Report(
+                    id=key,
+                    title=str(attributes.get("title") or "TorBox incident"),
+                    maintenance=attributes.get("report_type") == "maintenance",
+                    state=state,
+                    starts_at=_time(attributes.get("starts_at")),
+                    resolved=resolved,
+                    affected=[
+                        str(resources.get(str(a.get("status_page_resource_id")), ""))
+                        for a in attributes.get("affected_resources") or []
+                        if resources.get(str(a.get("status_page_resource_id")))
+                    ],
+                    updates=items,
+                )
+            )
+
+        reports.sort(key=lambda r: r.starts_at or datetime.min.replace(tzinfo=timezone.utc))
+        return reports
+
+    # --- posting ---
+
+    def _load(self) -> dict[str, Any] | None:
+        if self._state is None:
+            try:
+                self._state = json.loads(self._state_file.read_text())
+            except FileNotFoundError:
+                return None
+            except Exception as e:
+                logger.warning(f"TorBox status page: ignoring unreadable {self._state_file}: {e}")
+                return None
+
+        return self._state
+
+    def _save(self, state: dict[str, Any]) -> None:
+        self._state = state
+
+        try:
+            self._state_file.write_text(json.dumps(state, sort_keys=True))
+        except Exception as e:
+            logger.warning(f"TorBox status page: couldn't save {self._state_file}: {e}")
+
+    def announce(self, data: dict) -> None:
+        """
+        Post what changed since the last check: a new incident, each new
+        update, and the resolution. Everything is tracked even with notify off,
+        so turning it on doesn't post the page's history; ongoing incidents are
+        posted once when notify is first turned on.
+        """
+
+        notify = self.settings.notify and bool(self.settings.notify_urls)
+        reports = self.reports(data)
+        logo = ((data.get("data") or {}).get("attributes") or {}).get("logo_url")
+        previous = self._load()
+        seen = (previous or {}).get("reports", {})
+        # First check ever, or notify was off last time: don't post history
+        first_look = previous is None or (notify and not previous.get("notify"))
+        state: dict[str, Any] = {"notify": notify, "reports": {}}
+        posts = list[Notice]()
+
+        for report in reports:
+            before = seen.get(report.id)
+            state["reports"][report.id] = {
+                "updates": [u[0] for u in report.updates],
+                "resolved": report.resolved,
+            }
+
+            if first_look:
+                # Only what's ongoing, once, as it stands now
+                if not report.resolved:
+                    latest = report.updates[-1] if report.updates else None
+                    posts.append(self._notice(report, latest, "start", logo))
+                continue
+
+            known = set(before["updates"]) if before else set()
+            new = [u for u in report.updates if u[0] not in known]
+            newly_resolved = report.resolved and not (before or {}).get("resolved")
+
+            if before is None and not new:
+                # A new report without any update yet
+                posts.append(
+                    self._notice(report, None, "resolved" if report.resolved else "start", logo)
+                )
+                continue
+
+            for index, update in enumerate(new):
+                first = before is None and index == 0
+                last = index == len(new) - 1
+
+                if last and newly_resolved:
+                    kind = "start_resolved" if first else "resolved"
+                else:
+                    kind = "start" if first else "update"
+
+                posts.append(self._notice(report, update, kind, logo))
+
+            if newly_resolved and not new:
+                posts.append(self._notice(report, None, "resolved", logo))
+
+        self._save(state)
+
+        if notify:
+            for notice in posts:
+                send(self.settings.notify_urls, notice)
+
+    def _notice(
+        self,
+        report: Report,
+        update: tuple[str, datetime | None, str, str] | None,
+        kind: str,
+        logo: str | None,
+    ) -> Notice:
+        noun = "Maintenance" if report.maintenance else "Incident"
+        event = {
+            "start": f"TorBox {noun}",
+            "update": f"TorBox {noun} Update",
+            "resolved": f"TorBox {noun} Resolved",
+            "start_resolved": f"TorBox {noun} (Resolved)",
+        }[kind]
+        if update and update[2]:
+            message = update[2]
+        elif kind in ("resolved", "start_resolved"):
+            message = f"TorBox marked this {noun.lower()} resolved."
+        else:
+            message = f"TorBox posted a new {noun.lower()}."
+        state = "resolved" if kind in ("resolved", "start_resolved") else (update[3] if update and update[3] else report.state)
+
+        if kind in ("resolved", "start_resolved"):
+            color = GREEN
+        elif report.maintenance or state == "maintenance":
+            color = PURPLE
+        elif state == "downtime":
+            color = RED
+        else:
+            color = ORANGE
+
+        fields = [("Status", _label(state))]
+
+        if report.affected:
+            fields.append(("Affected", ", ".join(report.affected)))
+
+        if report.starts_at:
+            fields.append(("Started", report.starts_at.astimezone().strftime("%b %d, %H:%M %Z")))
+
+        return Notice(
+            event=event,
+            title=report.title,
+            description=message,
+            color=color,
+            fields=fields,
+            url=f"{self.settings.url.rstrip('/')}/incident/{report.id}",
+            image=logo,
+            timestamp=update[1] if update and update[1] else None,
+        )
+
+
+_SEVERITY = ["operational", "maintenance", "degraded", "downtime"]
+
+
+def _worst(affected: list[dict]) -> str:
+    states = [str(a.get("status") or "").lower() for a in affected]
+    known = [s for s in states if s in _SEVERITY]
+    return max(known, key=_SEVERITY.index) if known else ""
+
+
+health = TorBoxHealth()
+status_page = TorBoxStatusPage()
+
+
+def torbox_health_check() -> None:
+    """Scheduled every minute: status page when due, degraded/recovered notices."""
+
+    health.check()

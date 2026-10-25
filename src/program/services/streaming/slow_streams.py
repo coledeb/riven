@@ -219,6 +219,8 @@ class SlowFile:
     item_id: int | None
     title: str
     infohash: str | None
+    # Debrid provider of the file (only TorBox files are held while it's degraded)
+    provider: str | None = None
 
 
 class SlowStreamMonitor:
@@ -357,6 +359,19 @@ class SlowStreamMonitor:
             return
 
         if file.item_id is None:
+            return
+
+        from program.services.downloaders.torbox_health import health
+
+        # TorBox (or this server's CDN region) degraded: the file is probably
+        # fine; judge it afresh once TorBox recovers
+        if health.hold(
+            f"{file.title} (slow: {file.reason}, server {file.stats.host}; not replaced)",
+            host=file.stats.host,
+            provider=file.provider,
+        ):
+            self.health.clear(file.key)
+            self._refreshed.pop(file.key, None)
             return
 
         last = self._replaced.get(file.item_id)
@@ -507,17 +522,21 @@ class SlowStreamMonitor:
         from program.media.media_entry import MediaEntry
 
         item_id, title, infohash = None, os.path.basename(stats.path), None
+        provider = None
 
         with db_session() as session:
             entry = session.scalars(
                 select(MediaEntry).where(MediaEntry.original_filename == key)
             ).first()
 
+            if entry:
+                provider = entry.provider
+
             if entry and (item := entry.media_item):
                 item_id, title = item.id, item.log_string
                 infohash = item.active_stream.infohash if item.active_stream else None
 
-        return SlowFile(key, stats, sessions, reason, item_id, title, infohash)
+        return SlowFile(key, stats, sessions, reason, item_id, title, infohash, provider)
 
     @staticmethod
     def _program():

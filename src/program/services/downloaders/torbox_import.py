@@ -175,9 +175,19 @@ class TorBoxAccountImport:
 
         # Torrents Riven used or added are never imported: leftovers from
         # re-sourcing skip the ranking rules
-        self._known = (self._known | set(referenced) | created) & set(on_account)
-        self._notified &= set(on_account)
-        self._matches = {k: v for k, v in self._matches.items() if k in on_account}
+        self._known |= set(referenced) | created
+
+        from program.services.downloaders.torbox_health import health
+
+        # Forget torrents gone from the account, but not while TorBox is
+        # degraded: a short listing would make them look new (and get them
+        # imported, even over current files) once they show up again
+        if not health.degraded():
+            self._known &= set(on_account)
+            self._notified &= set(on_account)
+            self._matches = {
+                k: v for k, v in self._matches.items() if k in on_account
+            }
 
         candidates = [
             t
@@ -815,6 +825,15 @@ class TorBoxAccountImport:
                 )
 
         if not gone:
+            return set()
+
+        from program.services.downloaders.torbox_health import health
+
+        # TorBox degraded: "not found" may be its database flaking
+        if health.hold(
+            f"{len(gone)} torrent(s) missing from the account ({', '.join(gone)}); "
+            "not treated as deleted"
+        ):
             return set()
 
         from routers.secure.items import apply_item_mutation

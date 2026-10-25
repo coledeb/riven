@@ -177,6 +177,78 @@ class TorBoxUncachedModel(Observable):
         return tiers
 
 
+class TorBoxStatusPageModel(Observable):
+    url: str = Field(
+        default="https://status.torbox.app",
+        description=(
+            "TorBox's public status page (its index.json is read: one small "
+            "request, no key). Used by degraded_hold.use_status_page and notify. "
+            "Empty turns it off."
+        ),
+    )
+    interval_minutes: int = Field(
+        default=3, ge=1, le=60, description="Minutes between status page checks"
+    )
+    notify: bool = Field(
+        default=False,
+        description=(
+            "Post TorBox's incidents and maintenance from the status page to "
+            "notify_urls: when one starts, every update, and when it's resolved"
+        ),
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description="Apprise URLs (e.g. a Discord webhook) for status page posts",
+    )
+
+
+class TorBoxDegradedHoldModel(Observable):
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "While TorBox is degraded, nothing is replaced, blacklisted or given "
+            "up on because of TorBox errors: slow sources and dead links aren't "
+            "re-sourced, failed downloads are retried later, uncached downloads "
+            "keep waiting, torrents missing from the account listing aren't "
+            "treated as deleted. Each held action is logged; the normal checks "
+            "pick things up once TorBox recovers. Your own actions (DMM, manual "
+            "retry or scrape) still run."
+        ),
+    )
+    failures: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "TorBox counts as degraded after this many failed API calls "
+            "(timeouts, connection errors, HTTP 5xx) within window_minutes"
+        ),
+    )
+    window_minutes: int = Field(
+        default=15, ge=1, description="Window for counting failed API calls"
+    )
+    clear_minutes: int = Field(
+        default=30,
+        ge=5,
+        description="Degraded ends this long after the last failed API call",
+    )
+    use_status_page: bool = Field(
+        default=True,
+        description=(
+            "Also go by TorBox's status page (status_page.url): API or Database "
+            "not operational holds everything, a CDN region not operational holds "
+            "files on that region's servers. The page can start or extend a hold, "
+            "never end one Riven sees itself."
+        ),
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Apprise URLs (e.g. a Discord webhook) told when TorBox turns degraded "
+            "and when it recovers, with what was held"
+        ),
+    )
+
+
 class TorBoxModel(Observable):
     enabled: bool = Field(default=False, description="Enable TorBox")
     api_key: str = Field(default="", description="TorBox API key")
@@ -217,6 +289,14 @@ class TorBoxModel(Observable):
     uncached: TorBoxUncachedModel = Field(
         default_factory=lambda: TorBoxUncachedModel(),
         description="Download torrents TorBox doesn't have cached, as a last resort",
+    )
+    degraded_hold: TorBoxDegradedHoldModel = Field(
+        default_factory=lambda: TorBoxDegradedHoldModel(),
+        description="Hold known-good files while TorBox is degraded",
+    )
+    status_page: TorBoxStatusPageModel = Field(
+        default_factory=lambda: TorBoxStatusPageModel(),
+        description="TorBox's status page: a degraded signal and optional incident posts",
     )
 
 

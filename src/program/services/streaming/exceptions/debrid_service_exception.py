@@ -58,12 +58,20 @@ class DebridServiceServiceUnavailableException(DebridServiceException):
 class DebridServiceLinkUnavailable(DebridServiceException):
     """Raised when a link is unavailable on the debrid service."""
 
-    def __init__(self, provider: str, link: str, reason: str = "torrent_removed") -> None:
+    def __init__(
+        self,
+        provider: str,
+        link: str,
+        reason: str = "torrent_removed",
+        host: str | None = None,
+    ) -> None:
         super().__init__(f"Link {link} is unavailable or invalid", provider=provider)
 
         self.link = link
         # A BlacklistReason value: torrent_removed, or cdn_host_down for a pulled server
         self.reason = reason
+        # The CDN server, for cdn_host_down
+        self.host = host
 
 
 class DebridServiceClosedConnectionException(DebridServiceException):

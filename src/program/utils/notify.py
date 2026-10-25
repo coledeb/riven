@@ -46,6 +46,8 @@ class Notice:
     fields: list[tuple[str, str]] = field(default_factory=list)
     url: str | None = None
     image: str | None = None
+    # When it happened (default: now)
+    timestamp: datetime | None = None
 
     def with_item(self, item: "MediaItem", link_base: str = "") -> "Notice":
         """Fill the title link and poster from an item (shows use the show's poster)."""
@@ -142,7 +144,7 @@ def _embed(notice: Notice) -> dict:
         "author": {"name": notice.event},
         "title": _clip(notice.title, 256),
         "color": notice.color,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": (notice.timestamp or datetime.now(timezone.utc)).isoformat(),
     }
 
     if notice.url:

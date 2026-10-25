@@ -37,6 +37,12 @@ from .debridlink import DebridLinkDownloader
 from .alldebrid import AllDebridDownloader
 from .torbox import TorBoxDownloader
 from .torbox_uncached import Check, UncachedDownloads
+from .torbox_health import health as tb_health
+
+# While TorBox is degraded, an item whose downloads failed is retried this much later
+DEGRADED_RETRY = timedelta(minutes=10)
+# ...after trying at most this many streams, to spare a struggling TorBox
+DEGRADED_MAX_STREAMS = 3
 
 
 class Downloader(Runner[None, DownloaderBase]):
@@ -116,6 +122,8 @@ class Downloader(Runner[None, DownloaderBase]):
         # Track if we hit circuit breaker on any service
         hit_circuit_breaker = False
         unexpected_error = False
+        # Streams not blacklisted because TorBox is degraded (see torbox_health)
+        held_streams = 0
 
         # Uncached TorBox downloads (last resort): see torbox_uncached.py
         uncached = self._uncached_downloads(available_services)
@@ -277,6 +285,20 @@ class Downloader(Runner[None, DownloaderBase]):
                                 )
                         continue
 
+                # TorBox degraded: a failure may be TorBox flaking (an empty
+                # cache check or file list too), so don't blacklist; retry later
+                if (
+                    stream_failed_on_all_services
+                    and not held_for_uncached
+                    and any(isinstance(s, TorBoxDownloader) for s in available_services)
+                    and tb_health.holding()
+                ):
+                    stream_failed_on_all_services = False
+                    held_streams += 1
+
+                    if held_streams >= DEGRADED_MAX_STREAMS:
+                        break
+
                 # If stream succeeded on any service, we're done
                 if download_success:
                     # Add probed data if required
@@ -332,6 +354,25 @@ class Downloader(Runner[None, DownloaderBase]):
 
         if already_covered:
             yield RunnerResult(media_items=[item])
+            return
+
+        if (
+            not download_success
+            and not unexpected_error
+            and (held_streams or uncached)
+            and tb_health.holding()
+        ):
+            # Also no uncached download is started meanwhile (TorBox's "not
+            # cached" answers, and the add itself, can't be trusted)
+            next_attempt = datetime.now() + DEGRADED_RETRY
+
+            tb_health.hold(
+                f"{item.log_string}: no download now ({held_streams} failed "
+                f"stream(s) not blacklisted, no uncached download started); "
+                f"retrying at {next_attempt.strftime('%H:%M')}"
+            )
+
+            yield RunnerResult(media_items=[item], run_at=next_attempt)
             return
 
         if not download_success and uncached and not unexpected_error:

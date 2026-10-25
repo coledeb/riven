@@ -162,6 +162,17 @@ class VFSDatabase:
 
                         return entry.unrestricted_url, False
             except DebridServiceLinkUnavailable as e:
+                from program.services.downloaders.torbox_health import health
+
+                # TorBox degraded: an "offline server" or "not on the account"
+                # answer may be TorBox flaking; keep the file, try again later
+                if health.hold(
+                    f"{entry.original_filename} (not re-sourced: {e.reason})",
+                    host=e.host,
+                    provider=entry.provider,
+                ):
+                    return None, False
+
                 logger.warning(
                     f"Failed to unrestrict URL for {entry.original_filename}: {e}"
                 )

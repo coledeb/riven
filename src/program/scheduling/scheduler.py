@@ -99,6 +99,13 @@ class ProgramScheduler:
         if torbox.enabled:
             scheduled_functions[self._remove_unused_torrents] = {"interval": 10 * 60}
 
+            # TorBox degraded hold + status page (both check their settings themselves)
+            from program.services.downloaders.torbox_health import (
+                torbox_health_check,
+            )
+
+            scheduled_functions[torbox_health_check] = {"interval": 60}
+
         # Report items that stay missing as Overseerr issues
         overseerr = settings_manager.settings.content.overseerr
 

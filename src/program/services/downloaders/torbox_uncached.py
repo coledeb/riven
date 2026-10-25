@@ -269,6 +269,19 @@ class UncachedDownloads:
         return wait
 
     def _give_up(self, download: UncachedDownload, reason: str) -> Check:
+        from program.services.downloaders.torbox_health import health
+
+        # TorBox degraded: the stall (or "removed"/error) may be TorBox's;
+        # keep waiting, with a fresh stall clock
+        if health.hold(
+            f"uncached download for {download.item_name} (would give up: {reason})"
+        ):
+            with self._lock:
+                download.progress_at = time.time()
+                self._save()
+
+            return Check("wait", run_at=self._next_check())
+
         with self._lock:
             self._running.pop(download.item_id, None)
             self._save()

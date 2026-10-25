@@ -300,14 +300,23 @@ class TorBoxDownloader(DownloaderBase):
 
         self._check_pause("api", kind)
 
+        from program.services.downloaders.torbox_health import health
+
         try:
-            response = self.api.session.request(method, endpoint, **kwargs)
-        except (exceptions.ConnectionError, exceptions.Timeout):
-            time.sleep(1)
-            response = self.api.session.request(method, endpoint, **kwargs)
+            try:
+                response = self.api.session.request(method, endpoint, **kwargs)
+            except (exceptions.ConnectionError, exceptions.Timeout):
+                time.sleep(1)
+                response = self.api.session.request(method, endpoint, **kwargs)
+        except (exceptions.ConnectionError, exceptions.Timeout) as e:
+            health.record_failure(f"{endpoint}: {type(e).__name__}")
+            raise
 
         if response.status_code == 429:
             self._pause(kind, response)
+
+        if response.status_code >= 500:
+            health.record_failure(f"{endpoint}: HTTP {response.status_code}")
 
         try:
             body = response.json()
@@ -377,7 +386,9 @@ class TorBoxDownloader(DownloaderBase):
                 },
             )
 
-            if not response.ok:
+            if not response.ok or body.get("success") is False:
+                # A 200 with success false (seen while TorBox's database was
+                # degraded) must not read as an empty account
                 raise TorBoxError(
                     f"Failed to list torrents: {_error_text(response, body)}"
                 )
@@ -716,6 +727,14 @@ class TorBoxDownloader(DownloaderBase):
         if not self.settings.remove_unused_torrents:
             return
 
+        from program.services.downloaders.torbox_health import health
+
+        # A short listing while TorBox is degraded would drop own torrents
+        # from the record (never cleaned up after); wait for it to recover
+        if health.degraded():
+            logger.debug("TorBox: skipping unused-torrent check while TorBox is degraded")
+            return
+
         try:
             on_account = {str(t["id"]) for t in self._iter_account() if t.get("id")}
             used = self._used_ids()
@@ -854,6 +873,8 @@ class TorBoxDownloader(DownloaderBase):
 
         torrent_id, file_id = ids
 
+        from program.services.downloaders.torbox_health import health
+
         try:
             self._check_pause("api", "link")
         except TorBoxRateLimited as e:
@@ -878,6 +899,7 @@ class TorBoxDownloader(DownloaderBase):
             logger.debug(
                 f"TorBox link request failed for torrent {torrent_id} file {file_id}: {type(e).__name__}"
             )
+            health.record_failure(f"requestdl: {type(e).__name__}")
             return None
 
         if response.status_code == 429:
@@ -909,7 +931,10 @@ class TorBoxDownloader(DownloaderBase):
                     f"TorBox torrent {torrent_id} file {file_id} is on an offline CDN server ({urlparse(url).hostname}); picking another source"
                 )
                 raise DebridServiceLinkUnavailable(
-                    provider=self.key, link=link, reason="cdn_host_down"
+                    provider=self.key,
+                    link=link,
+                    reason="cdn_host_down",
+                    host=urlparse(url).hostname,
                 )
 
             return UnrestrictedLink(download=url, filename="file", filesize=0)
@@ -925,6 +950,10 @@ class TorBoxDownloader(DownloaderBase):
         logger.warning(
             f"TorBox could not create a link for torrent {torrent_id} file {file_id}: {_error_text(response, body)}"
         )
+
+        # The file is still there, so a 5xx here is TorBox failing, not a vanished file
+        if response.status_code >= 500:
+            health.record_failure(f"requestdl: HTTP {response.status_code}")
 
         return None
 
