@@ -186,9 +186,11 @@ class ChunkRange:
 
         # The request spans content, so calculate the required chunks.
         content_request_start = max(0, start - self.header_chunk.size)
+        # Both in content coordinates (bytes after the header); clamping to the
+        # footer's absolute start overshot by the header size into the footer
         content_request_end = min(
             max(0, end - self.header_chunk.size),
-            self.footer_chunk.start - 1,
+            max(0, self.footer_chunk.start - 1 - self.header_chunk.size),
         )
 
         lower_chunk_index = min(
