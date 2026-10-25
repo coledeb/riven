@@ -280,7 +280,8 @@ class TorBoxDownloader(DownloaderBase):
                 f"TorBox didn't answer at startup ({problem}); loading it anyway "
                 "and checking the plan again in the background"
             )
-            health.record_failure(f"user/me: {problem}")
+            # Settings reloads run this again; one slow startup counts once
+            health.record_failure(f"user/me: {problem}", once="startup plan check")
             threading.Thread(
                 target=self._recheck_plan, name="torbox-plan-check", daemon=True
             ).start()

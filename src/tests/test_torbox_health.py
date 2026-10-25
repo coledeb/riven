@@ -114,6 +114,18 @@ def test_one_torrent_failing_over_and_over_counts_once(clocked):
     assert "3 TorBox API call(s) failed" in clocked.reason()
 
 
+def test_repeats_of_one_check_count_once(clocked):
+    # The startup plan check, run again by a settings reload
+    for _ in range(3):
+        clocked.record_failure("user/me: Timeout", once="startup plan check")
+
+    assert not clocked.degraded()
+
+    clocked.record_failure("torrents/mylist: Timeout")
+    clocked.record_failure("torrents/mylist: Timeout")
+    assert clocked.degraded()  # a real outage still trips it
+
+
 def test_failures_among_many_good_calls_dont_count(clocked):
     for _ in range(20):
         clocked.record_success()
@@ -263,7 +275,9 @@ def test_degraded_and_recovered_are_announced_once_with_what_was_held(
 
     assert [n.event for n in sent] == ["TorBox Degraded", "TorBox Recovered"]
     assert sent[1].color == GREEN
-    assert "Backrooms" in dict(sent[1].fields)["Held off on"]
+    assert "held off on 1 action " in sent[1].description
+    assert "Backrooms" not in sent[1].description
+    assert not sent[1].fields
 
 
 def test_flapping_is_announced_at_most_every_30_minutes(
@@ -307,7 +321,7 @@ def test_region_only_holds_dont_show_up_in_a_later_recovery(clocked, monkeypatch
     clocked.clock.now += 31 * 60
     clocked.check()
 
-    assert "old region hold" not in dict(sent[-1].fields)["Held off on"]
+    assert "didn't have to hold off on anything" in sent[-1].description
 
 
 # --- TorBox API calls feed it ---

@@ -235,7 +235,9 @@ def test_loads_while_torbox_doesnt_answer(fake, monkeypatch, answer):
     rechecks = []
     monkeypatch.setattr(TorBoxDownloader, "_recheck_plan", lambda self: rechecks.append(1))
     failures = []
-    monkeypatch.setattr(health, "record_failure", failures.append)
+    monkeypatch.setattr(
+        health, "record_failure", lambda what, *_a, **_k: failures.append(what)
+    )
     fake.user_response = answer
 
     assert TorBoxDownloader().initialized

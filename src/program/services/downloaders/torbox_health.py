@@ -57,8 +57,6 @@ REGION_HOST = re.compile(r"\.([a-z0-9]+)\.tb-cdn\.io$", re.IGNORECASE)
 
 # Degraded/recovered notices: a new "degraded" notice at most this often (flapping)
 NOTICE_GAP_SECONDS = 30 * 60
-# Held actions listed in the "recovered" notice
-HELD_LIST_LIMIT = 10
 PAGE_TIMEOUT = 10
 
 # Plain names for notices: "torrents/mylist: Timeout" -> "the torrent list timed out"
@@ -114,7 +112,7 @@ class TorBoxHealth:
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self._clock = clock
         self._lock = threading.Lock()
-        # (when, torrent id or None); one torrent failing over and over counts once
+        # (when, dedupe key or None); one torrent failing over and over counts once
         self._failures = deque[tuple[float, str | None]]()
         # When TorBox API calls answered fine, to tell a few bad files from TorBox failing
         self._successes = deque[float]()
@@ -129,7 +127,6 @@ class TorBoxHealth:
         self._announced = False
         self._announced_at = -NOTICE_GAP_SECONDS
         self._since: float | None = None
-        self._held = list[str]()
         self._held_count = 0
 
     @property
@@ -142,17 +139,22 @@ class TorBoxHealth:
 
     # --- signals ---
 
-    def record_failure(self, what: str, torrent_id: str | int | None = None) -> None:
+    def record_failure(
+        self, what: str, torrent_id: str | int | None = None, once: str | None = None
+    ) -> None:
         """
         A TorBox API call failed (timeout, connection error, HTTP 5xx). Pass the
         torrent for calls about one torrent: repeated failures for the same
         torrent count once, since that's more likely the torrent than TorBox.
+        `once` does the same for other repeats of one check (e.g. the startup
+        plan check, run again when settings reload).
         """
 
         torrent = str(torrent_id) if torrent_id is not None else None
+        key = f"torrent {torrent}" if torrent else once
 
         with self._lock:
-            self._failures.append((self._clock(), torrent))
+            self._failures.append((self._clock(), key))
             self._last_failure = what
             self._evaluate()
             counted, share = self._counted(self._clock())
@@ -233,11 +235,11 @@ class TorBoxHealth:
             self._successes.popleft()
 
     def _counted(self, now: float) -> tuple[int, float]:
-        """Failures in the window (each torrent once) and their share of all calls."""
+        """Failures in the window (each torrent / `once` key once) and their share of all calls."""
 
         self._trim(now)
-        torrents = {t for _, t in self._failures if t is not None}
-        counted = sum(1 for _, t in self._failures if t is None) + len(torrents)
+        keys = {k for _, k in self._failures if k is not None}
+        counted = sum(1 for _, k in self._failures if k is None) + len(keys)
         calls = len(self._failures) + len(self._successes)
         return counted, (len(self._failures) / calls if calls else 0.0)
 
@@ -318,9 +320,6 @@ class TorBoxHealth:
 
         with self._lock:
             self._held_count += 1
-
-            if len(self._held) < HELD_LIST_LIMIT:
-                self._held.append(what)
 
         return True
 
@@ -422,7 +421,7 @@ class TorBoxHealth:
         if not degraded and self._since is None:
             # Only CDN-region holds (logged as they happen); nothing to report
             with self._lock:
-                self._held, self._held_count = [], 0
+                self._held_count = 0
 
             return
 
@@ -454,29 +453,27 @@ class TorBoxHealth:
             minutes = round((now - self._since) / 60)
 
             with self._lock:
-                held, count = self._held, self._held_count
-                self._held, self._held_count = [], 0
+                count, self._held_count = self._held_count, 0
 
             logger.info(
                 f"TorBox recovered after {minutes} min; {count} action(s) were held"
             )
 
             if self._announced:
-                listed = "\n".join(held)
-
-                if count > len(held):
-                    listed += f"\n…and {count - len(held)} more"
+                # Each held action is in the log; the notice only counts them
+                held = (
+                    f"Riven held off on {count} action{'s' if count != 1 else ''} "
+                    "(replacing or removing files); the normal checks pick them up now."
+                    if count
+                    else "Riven didn't have to hold off on anything."
+                )
 
                 self._notify(
                     Notice(
                         event="TorBox Recovered",
                         title="TorBox is back",
-                        description=(
-                            f"It had problems for about {minutes} min. Anything Riven "
-                            "held off on is picked up by the normal checks."
-                        ),
+                        description=f"It had problems for about {minutes} min. {held}",
                         color=GREEN,
-                        fields=[("Held off on", listed or "nothing")],
                         url=self.page_settings.url or None,
                     )
                 )
