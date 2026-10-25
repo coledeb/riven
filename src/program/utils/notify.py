@@ -24,6 +24,7 @@ ORANGE = 15105570  # pending / attention
 PURPLE = 10181046  # in progress
 GREEN = 3066993  # available
 RED = 15158332  # failed
+BLUE = 0x60A5FA  # maintenance (TorBox status page colour)
 
 BOT_NAME = "Riven"
 BOT_AVATAR = "https://raw.githubusercontent.com/coledeb/riven/a4448e7b15c8b60f62810bc4a6cbbd5cb9331daf/assets/riven-discord-avatar.png"

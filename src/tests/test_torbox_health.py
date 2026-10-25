@@ -17,7 +17,7 @@ from program.services.downloaders.torbox_health import (
 from program.services.downloaders.torbox_import import TorBoxAccountImport
 from program.services.streaming.exceptions import DebridServiceLinkUnavailable
 from program.settings import settings_manager
-from program.utils.notify import GREEN, ORANGE, RED
+from program.utils.notify import BLUE, GREEN, ORANGE, RED
 from tests.test_torbox_downloader import (  # noqa: F401 - fixtures
     CACHED,
     EXISTING,
@@ -655,6 +655,7 @@ def test_maintenance_is_labelled_as_such(page, monkeypatch):
                             [("200", "Upgrading", "2026-10-26T06:00:00Z", "maintenance")]))
 
     assert [n.event for n in page.sent] == ["TorBox Maintenance"]
+    assert page.sent[0].color == BLUE  # as on the status page
 
 
 def test_run_feeds_health_and_survives_an_unreadable_page(hold_settings, tmp_path):
@@ -699,9 +700,10 @@ def test_degraded_notice_says_maintenance_in_plain_words(clocked):
     )
     clocked.record_failure("torrents/mylist: Timeout")
 
-    title, fields = clocked.summary()
+    title, fields, maintenance = clocked.summary()
 
     assert title == "TorBox is down for maintenance"
+    assert maintenance
     assert dict(fields)["What Riven saw"] == (
         "A TorBox request failed: the torrent list timed out."
     )

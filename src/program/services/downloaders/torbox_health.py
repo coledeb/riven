@@ -43,7 +43,7 @@ from loguru import logger
 
 from program.settings import settings_manager
 from program.utils import data_dir_path
-from program.utils.notify import GREEN, ORANGE, PURPLE, RED, Notice, send
+from program.utils.notify import BLUE, GREEN, ORANGE, RED, Notice, send
 
 PROVIDER = "torbox"
 
@@ -286,8 +286,11 @@ class TorBoxHealth:
 
         return "; ".join(reasons) or "unknown"
 
-    def summary(self) -> tuple[str, list[tuple[str, str]]]:
-        """Notice title and fields saying in plain words why TorBox counts as degraded."""
+    def summary(self) -> tuple[str, list[tuple[str, str]], bool]:
+        """
+        Notice title and fields saying in plain words why TorBox counts as
+        degraded, and whether the status page says it's maintenance.
+        """
 
         now = self._clock()
         fields = list[tuple[str, str]]()
@@ -319,7 +322,7 @@ class TorBoxHealth:
             maintenance = set(page.problems.values()) == {"maintenance"}
 
         title = "TorBox is down for maintenance" if maintenance else "TorBox is having problems"
-        return title, fields
+        return title, fields, maintenance
 
     # --- scheduled check ---
 
@@ -352,7 +355,7 @@ class TorBoxHealth:
             if now - self._announced_at >= NOTICE_GAP_SECONDS:
                 self._announced = True
                 self._announced_at = now
-                title, fields = self.summary()
+                title, fields, maintenance = self.summary()
                 self._notify(
                     Notice(
                         event="TorBox Degraded",
@@ -363,7 +366,7 @@ class TorBoxHealth:
                             "errors until it's back. Playback and new downloads "
                             "may fail meanwhile. You'll get a message when it recovers."
                         ),
-                        color=ORANGE,
+                        color=BLUE if maintenance else ORANGE,
                         fields=fields,
                         url=self.page_settings.url or None,
                     )
@@ -686,7 +689,7 @@ class TorBoxStatusPage:
         if kind in ("resolved", "start_resolved"):
             color = GREEN
         elif report.maintenance or state == "maintenance":
-            color = PURPLE
+            color = BLUE
         elif state == "downtime":
             color = RED
         else:
