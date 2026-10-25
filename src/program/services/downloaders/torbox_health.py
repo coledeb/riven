@@ -589,7 +589,8 @@ class TorBoxStatusPage:
     # --- posting ---
 
     def _report_url(self, report: Report) -> str:
-        return f"{self.settings.url.rstrip('/')}/incident/{report.id}"
+        kind = "maintenance" if report.maintenance else "incident"
+        return f"{self.settings.url.rstrip('/')}/{kind}/{report.id}"
 
     def _load(self) -> dict[str, Any] | None:
         if self._state is None:
