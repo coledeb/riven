@@ -17,11 +17,13 @@ from program.services.updaters.base import BaseUpdater
 from program.settings import settings_manager
 
 # Removing replaced versions: wait this long after an update, then for Plex to
-# finish scanning (at most SCAN_WAIT seconds). More trashed items than
-# MAX_TRASH in a section means the share is probably down, so nothing is removed.
+# finish scanning (at most SCAN_WAIT seconds). No count limit guards against a
+# share that is down: a version is only removed when Plex finds another version
+# of the same item and the new file exists in Riven's library, which can't hold
+# while the share is down. MAX_CHECK only bounds the Plex queries per run.
 CLEANUP_DELAY = 60
 SCAN_WAIT = 15 * 60
-MAX_TRASH = 10
+MAX_CHECK = 500
 PLEX_TYPES = {"movie": 1, "show": 4}
 
 
@@ -191,14 +193,13 @@ class PlexUpdater(BaseUpdater):
                 )
             )
 
-            if len(trash) > MAX_TRASH:
+            if len(trash) > MAX_CHECK:
                 logger.warning(
-                    f"Plex: {len(trash)} items in {section.title}'s trash (share down?); "
-                    "not removing replaced versions"
+                    f"Plex: {len(trash)} items in {section.title}'s trash; checking "
+                    f"the first {MAX_CHECK} for replaced versions"
                 )
-                continue
 
-            for entry in trash:
+            for entry in trash[:MAX_CHECK]:
                 rating_key = entry.get("ratingKey")
                 video = next(
                     iter(server.query(f"/library/metadata/{rating_key}?checkFiles=1")),

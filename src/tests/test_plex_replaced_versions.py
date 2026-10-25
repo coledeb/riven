@@ -159,6 +159,9 @@ class FakeServer:
             ]
 
         if key.startswith("/library/metadata/1610?"):
+            if getattr(self, "share_down", False):
+                new_gone = gone(NEW, media_id="2049")
+                return [video(new_gone, gone())]
             return [video(present(), gone())]
 
         return [video(present(NEW + "x"))]
@@ -199,9 +202,21 @@ def test_dry_run_deletes_nothing(monkeypatch):
     assert server.deleted == []
 
 
-def test_full_trash_means_share_down(monkeypatch):
+def test_a_full_trash_from_a_mass_swap_is_still_cleaned(monkeypatch):
+    # 2026-10-24: re-sourcing two House seasons left 46 versions in the trash
     monkeypatch.setattr(plex.os.path, "exists", only(NEW_LOCAL))
-    server = FakeServer(trash_size=plex.MAX_TRASH + 1)
+    server = FakeServer(trash_size=46)
+
+    assert updater(server).remove_replaced_versions([NEW_LOCAL])
+    assert server.deleted == ["/library/metadata/1610/media/1937"]
+
+
+def test_share_down_removes_nothing_however_full_the_trash(monkeypatch):
+    # Share down: Riven still sees its files, but Plex finds no version at all
+    # (everything is in the trash), so no version counts as replaced
+    monkeypatch.setattr(plex.os.path, "exists", only(NEW_LOCAL))
+    server = FakeServer(trash_size=200)
+    server.share_down = True
 
     assert updater(server).remove_replaced_versions([NEW_LOCAL]) == []
     assert server.deleted == []
