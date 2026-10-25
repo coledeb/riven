@@ -19,8 +19,10 @@ URL = "https://cdn.example/dld/file?token=t"
 @pytest.fixture(autouse=True)
 def clear_pauses():
     media_stream._host_paused_until.clear()
+    media_stream._host_429_streak.clear()
     yield
     media_stream._host_paused_until.clear()
+    media_stream._host_429_streak.clear()
 
 
 def make_stream(handler):
@@ -102,3 +104,67 @@ def test_429_pauses_other_connections_to_the_same_host():
     # Only the first request hit the CDN before the 10 s pause ended
     assert len(calls) == 3
     assert calls[1] >= calls[0] + 10 and calls[2] >= calls[0] + 10
+
+
+def test_429s_in_a_row_keep_backing_off_across_connections():
+    calls = []
+
+    def handler(_request):
+        calls.append(trio.current_time())
+        return httpx.Response(429)
+
+    stream = make_stream(handler)
+
+    async def main():
+        for _ in range(2):  # the reader tries again after the first give-up
+            with pytest.raises(DebridServiceRateLimitedException):
+                async with stream.establish_connection(0, end=9):
+                    pass
+
+    run(main)
+    gaps = [b - a for a, b in zip(calls, calls[1:], strict=False)]
+    # 2/4/8, then the second connection keeps growing instead of starting at 2 s
+    assert gaps == pytest.approx([2, 4, 8, 16, 30, 30, 30])
+
+
+def test_a_good_answer_resets_the_backoff():
+    answers = [429, 429, 206, 429]
+
+    def handler(_request):
+        return httpx.Response(answers.pop(0), content=b"x" * 10)
+
+    stream = make_stream(handler)
+
+    async def main():
+        async with stream.establish_connection(0, end=9):
+            pass
+
+        assert media_stream._host_429_streak == {}
+
+        async with stream.establish_connection(0, end=9):
+            pass
+
+    answers.append(206)
+    run(main)
+    assert media_stream._host_429_streak == {}
+
+
+def test_reconnect_uses_a_pushed_fresh_link(monkeypatch):
+    fresh = "https://other-cdn.example/dld/file?token=new"
+    hosts = []
+
+    def handler(request):
+        hosts.append(request.url.host)
+        return httpx.Response(206, content=b"x" * 10)
+
+    stream = make_stream(handler)
+    stream._pushed_url = None
+    monkeypatch.setattr(media_stream.stream_health, "pushed_url", lambda _key: fresh)
+
+    async def main():
+        async with stream.establish_connection(0, end=9):
+            pass
+
+    run(main)
+    assert hosts == ["other-cdn.example"]
+    assert stream.target_url.value == fresh

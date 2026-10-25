@@ -75,7 +75,10 @@ class DebridCDNUrl:
                         return None
 
                 with httpx.Client(proxy=proxy) as client:
-                    with client.stream(method="GET", url=self.url) as response:
+                    # One byte is enough to know the link works
+                    with client.stream(
+                        method="GET", url=self.url, headers={"Range": "bytes=0-0"}
+                    ) as response:
                         response.raise_for_status()
 
                         return self.url
@@ -87,6 +90,13 @@ class DebridCDNUrl:
                 )
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
+
+                if status_code == HTTPStatus.TOO_MANY_REQUESTS:
+                    # The link exists; the server is throttling us. Retrying at
+                    # once only adds to that, and the stream waits out 429s itself.
+                    logger.debug(f"CDN rate limited while validating {self.url}; keeping it")
+
+                    return self.url
 
                 if (
                     status_code in (HTTPStatus.NOT_FOUND, HTTPStatus.GONE)

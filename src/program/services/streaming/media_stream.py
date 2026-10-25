@@ -50,7 +50,9 @@ PROXY_REQUIRED_PROVIDERS = {"alldebrid"}
 # HTTP 429 handling. A CDN that rate limits us must get a real pause, shared by
 # every connection to that host (the main stream plus header/footer/scan reads),
 # or the parallel retries keep it rate limited until reads fail.
-RATE_LIMIT_BACKOFFS = [2.0, 4.0, 8.0]
+# The pause grows with each 429 in a row from a host (across connections, so a
+# reader retrying over and over backs off too) and resets on a good answer.
+RATE_LIMIT_BACKOFFS = [2.0, 4.0, 8.0, 16.0, 30.0]
 RATE_LIMIT_MAX_WAIT = 30.0
 # Waits before retrying a failed link refresh (provider API hiccup); stop
 # retrying once this much time has passed, since the reader is waiting
@@ -89,6 +91,8 @@ def _error_summary(e: BaseException) -> str:
 
     return message
 _host_paused_until: dict[str, float] = {}
+# 429s in a row from each host
+_host_429_streak: dict[str, int] = {}
 
 
 class _CallerError(Exception):
@@ -762,6 +766,11 @@ class MediaStream:
                         if self._stream_error.value:
                             raise self._stream_error.value from None
 
+                        # Closed while still connecting (e.g. the idle-stream
+                        # cleanup during a long 429 wait)
+                        if self.is_killed.value:
+                            raise MediaStreamKilledException from None
+
                         raise
 
             self.recent_reads.current_read.value = Read(
@@ -905,6 +914,10 @@ class MediaStream:
         backoffs = [0.2, 0.5, 1.0]
 
         for attempt in range(max_attempts):
+            # A fresh link the slow-stream check picked: use it for this
+            # connection, not only once the old one starts returning data
+            self._switch_to_pushed_url()
+
             try:
                 host = httpx.URL(self.target_url.value).host
             except httpx.InvalidURL:
@@ -919,6 +932,7 @@ class MediaStream:
                     extensions=extensions,
                 ) as stream:
                     stream.raise_for_status()
+                    _host_429_streak.pop(host, None)
 
                     content_length = stream.headers.get("Content-Length")
 
@@ -1023,10 +1037,12 @@ class MediaStream:
                 elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
                     # Rate limited - pause every connection to this host
                     # (Retry-After if given, else 2/4/8 s), don't refresh URL
+                    streak = _host_429_streak.get(host, 0) + 1
+                    _host_429_streak[host] = streak
                     delay = _retry_after_seconds(e.response)
                     if delay is None:
                         delay = RATE_LIMIT_BACKOFFS[
-                            min(attempt, len(RATE_LIMIT_BACKOFFS) - 1)
+                            min(streak - 1, len(RATE_LIMIT_BACKOFFS) - 1)
                         ]
                     _pause_host(host, delay)
 

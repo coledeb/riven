@@ -8,15 +8,19 @@ import trio
 from program.services.streaming.exceptions.debrid_service_exception import (
     DebridServiceRateLimitedException,
 )
+from program.services.streaming.exceptions.media_stream_exception import (
+    MediaStreamKilledException,
+)
 from program.services.streaming.media_stream import MediaStream
 
 
-def make_stream(nursery, error):
+def make_stream(nursery, error, killed=False):
     stream = MediaStream.__new__(MediaStream)
     stream.nursery = nursery
     stream.config = SimpleNamespace(connect_timeout_seconds=5)
     stream.is_streaming = SimpleNamespace(value=False)
     stream._stream_error = SimpleNamespace(value=None)
+    stream.is_killed = SimpleNamespace(value=killed)
     stream.recent_reads = SimpleNamespace(
         current_read=SimpleNamespace(value=None),
         previous_read=SimpleNamespace(value=None),
@@ -34,9 +38,9 @@ def make_stream(nursery, error):
     return stream
 
 
-async def open_read(error):
+async def open_read(error, killed=False):
     async with trio.open_nursery() as nursery:
-        stream = make_stream(nursery, error)
+        stream = make_stream(nursery, error, killed)
         async with stream.read_lifecycle(SimpleNamespace(position=0)):
             pass
 
@@ -56,3 +60,12 @@ def test_run_exiting_without_an_error_still_raises_runtime_error():
         trio.run(open_read, None)
 
     assert excinfo.group_contains(RuntimeError)
+
+
+def test_stream_closed_while_connecting_says_so():
+    # The idle-stream cleanup closed it during a long 429 wait
+    with pytest.raises(ExceptionGroup) as excinfo:
+        trio.run(open_read, None, True)
+
+    assert excinfo.group_contains(MediaStreamKilledException)
+    assert not excinfo.group_contains(RuntimeError)
