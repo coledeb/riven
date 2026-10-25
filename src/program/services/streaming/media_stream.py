@@ -51,6 +51,10 @@ PROXY_REQUIRED_PROVIDERS = {"alldebrid"}
 # or the parallel retries keep it rate limited until reads fail.
 RATE_LIMIT_BACKOFFS = [2.0, 4.0, 8.0]
 RATE_LIMIT_MAX_WAIT = 30.0
+# Waits before retrying a failed link refresh (provider API hiccup); stop
+# retrying once this much time has passed, since the reader is waiting
+REFRESH_RETRY_BACKOFFS = [2.0, 4.0]
+REFRESH_RETRY_MAX_SECONDS = 10.0
 _host_paused_until: dict[str, float] = {}
 
 
@@ -1288,16 +1292,40 @@ class MediaStream:
 
         from program.services.filesystem.vfs import VFSDatabase
 
-        # Query database by original_filename and force unrestrict
-        entry_info = di[VFSDatabase].get_entry_by_original_filename(
-            original_filename=self.file_metadata.original_filename,
-            force_resolve=True,
-        )
+        started = trio.current_time()
 
-        if entry_info:
+        for attempt in range(len(REFRESH_RETRY_BACKOFFS) + 1):
+            if attempt:
+                delay = REFRESH_RETRY_BACKOFFS[attempt - 1]
+
+                if trio.current_time() - started + delay > REFRESH_RETRY_MAX_SECONDS:
+                    break
+
+                logger.debug(
+                    self.build_log_message(
+                        f"Link refresh failed, retrying in {delay:.0f}s"
+                    )
+                )
+                await trio.sleep(delay)
+
+            # Query database by original_filename and force unrestrict; off
+            # the event loop, as the provider call can take seconds
+            entry_info = await trio.to_thread.run_sync(
+                lambda: di[VFSDatabase].get_entry_by_original_filename(
+                    original_filename=self.file_metadata.original_filename,
+                    force_resolve=True,
+                )
+            )
+
+            if not entry_info:
+                return False
+
             fresh_url = entry_info.url
 
-            if fresh_url and fresh_url != self.target_url.value:
+            if fresh_url:
+                if fresh_url == self.target_url.value:
+                    return False
+
                 if self.enable_tracing:
                     logger.log(
                         "STREAM",
@@ -1309,6 +1337,14 @@ class MediaStream:
                 self.target_url.value = fresh_url
 
                 return True
+
+            if entry_info.link_gone:
+                # Being re-sourced; asking again would blacklist another stream
+                return False
+
+            # Otherwise the provider call failed (API hiccup). Retries go
+            # through its circuit breaker: they count as failures, and while
+            # it is OPEN they fail at once without contacting the provider.
 
         return False
 

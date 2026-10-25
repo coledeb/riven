@@ -42,12 +42,19 @@ class GetEntryByOriginalFilenameResult(BaseModel):
     created: str | None
     modified: str | None
     entry_type: Literal["media", "subtitle"]
+    # The provider said the file is gone; the item is being re-sourced
+    link_gone: bool = False
 
     @property
     def url(self) -> str | None:
-        """The URL to use for this request."""
+        """The URL to use for this request.
 
-        return self.unrestricted_url or self.download_url
+        Only the unrestricted (CDN) URL: the stored download_url is the
+        provider link to unrestrict (TorBox: an API URL without the key, which
+        answers 422), never something to stream from.
+        """
+
+        return self.unrestricted_url
 
 
 class VFSDatabase:
@@ -110,10 +117,19 @@ class VFSDatabase:
             entry: MediaEntry to refresh
         """
 
+        return self._refresh_unrestricted_url(entry, session)[0]
+
+    def _refresh_unrestricted_url(
+        self,
+        entry: MediaEntry,
+        session: Session,
+    ) -> tuple[str | None, bool]:
+        """refresh_unrestricted_url, plus whether the provider said the link is gone."""
+
         if not self.downloader:
             logger.warning("No downloader available to refresh unrestricted URL")
 
-            return None
+            return None, False
 
         from program.program import Program
 
@@ -144,7 +160,7 @@ class VFSDatabase:
                             f"Refreshed unrestricted URL for {entry.original_filename}"
                         )
 
-                        return entry.unrestricted_url
+                        return entry.unrestricted_url, False
             except DebridServiceLinkUnavailable as e:
                 logger.warning(
                     f"Failed to unrestrict URL for {entry.original_filename}: {e}"
@@ -182,14 +198,14 @@ class VFSDatabase:
                             )
                         )
 
-                    return None
+                    return None, True
                 raise
             except Exception as e:
                 logger.warning(
                     f"Unexpected error when unrestricting URL for {entry.original_filename}: {e}"
                 )
 
-        return None
+        return None, False
 
     def get_entry_by_original_filename(
         self,
@@ -225,10 +241,12 @@ class VFSDatabase:
                 unrestricted_url = entry.unrestricted_url
 
                 # If force_resolve or no unrestricted URL, try to unrestrict
+                link_gone = False
+
                 if (force_resolve or not unrestricted_url) and (
                     self.downloader and entry.provider
                 ):
-                    unrestricted_url = self.refresh_unrestricted_url(
+                    unrestricted_url, link_gone = self._refresh_unrestricted_url(
                         entry,
                         session=session,
                     )
@@ -243,6 +261,7 @@ class VFSDatabase:
                     created=(entry.created_at.isoformat()),
                     modified=(entry.updated_at.isoformat()),
                     entry_type="media",
+                    link_gone=link_gone,
                 )
         except DebridServiceLinkUnavailable:
             raise

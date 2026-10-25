@@ -47,6 +47,7 @@ def vfs(monkeypatch):
     vfs._next_inode = pyfuse3.InodeT(pyfuse3.ROOT_INODE + 1)
     vfs._pending_invalidations = set()
     vfs._held = {}
+    vfs._read_errors = {}
     vfs._replaced_ids = set()
     vfs._hold_timeout = 600
     return vfs

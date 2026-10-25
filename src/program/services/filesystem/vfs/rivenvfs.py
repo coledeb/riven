@@ -91,6 +91,8 @@ from ...streaming import (
 
 # How long RivenVFS() waits for the FUSE thread to finish mounting.
 MOUNT_WAIT_SECONDS = 10
+# Log the same read error for a file handle at most this often (seconds)
+READ_ERROR_LOG_INTERVAL = 60
 
 
 if TYPE_CHECKING:
@@ -203,6 +205,8 @@ class RivenVFS(pyfuse3.Operations):
         # (item id -> (paths, original_filename)), so media servers scanning
         # mid-swap don't see them vanish. See hold().
         self._held: dict[int, tuple[list[str], str]] = {}
+        # fh -> {read error message: [repeats not logged, time last logged]}
+        self._read_errors: dict[int, dict[str, list[float]]] = {}
 
         # Item ids whose file was swapped in place; the updater rescans them later
         self._replaced_ids = set[int]()
@@ -2105,9 +2109,7 @@ class RivenVFS(pyfuse3.Operations):
                 )
             except* ChunksTooSlowException as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.ETIMEDOUT) from e
             except* (
@@ -2115,37 +2117,27 @@ class RivenVFS(pyfuse3.Operations):
                 DebridServiceUnableToConnectException,
             ) as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.ENOENT) from e
             except* DebridServiceForbiddenException as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.EACCES) from e
             except* DebridServiceRangeNotSatisfiableException as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.EINVAL) from e
             except* DebridServiceRefusedRangeRequestException as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.ERANGE) from e
             except* DebridServiceRateLimitedException as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.EAGAIN) from e
             except* (
@@ -2153,9 +2145,7 @@ class RivenVFS(pyfuse3.Operations):
                 MediaStreamKilledException,
             ) as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.ECONNABORTED) from e
             except* (
@@ -2163,19 +2153,12 @@ class RivenVFS(pyfuse3.Operations):
                 MediaStreamDataException,
             ) as e:
                 for exc in e.exceptions:
-                    logger.error(
-                        stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                    )
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.EIO) from e
             except* Exception as e:
                 for exc in e.exceptions:
-                    if stream:
-                        logger.error(
-                            stream.build_log_message(f"{exc.__class__.__name__}: {exc}")
-                        )
-                    else:
-                        logger.error(f"{exc.__class__.__name__}: {exc}")
+                    self._log_read_error(fh, stream, exc)
 
                 raise pyfuse3.FUSEError(errno.EIO)
         except pyfuse3.FUSEError:
@@ -2195,6 +2178,46 @@ class RivenVFS(pyfuse3.Operations):
             logger.exception(f"read error fh={fh} off={off} size={size}")
 
             raise pyfuse3.FUSEError(errno.EIO)
+
+    def _log_read_error(
+        self,
+        fh: pyfuse3.FileHandleT,
+        stream: "MediaStream | None",
+        exc: BaseException,
+    ) -> None:
+        """Log a failed read once per file handle and message.
+
+        A failing stream fails every pending read (hundreds when Plex reads
+        ahead), so repeats are only counted: reported with the next log of
+        the same error a minute later, or when the file is closed.
+        """
+
+        message = f"{exc.__class__.__name__}: {exc}"
+
+        if stream:
+            message = stream.build_log_message(message)
+
+        now = time.monotonic()
+        seen = self._read_errors.setdefault(fh, {})
+        repeats, last_logged = seen.get(message, (0, None))
+
+        if last_logged is not None and now - last_logged < READ_ERROR_LOG_INTERVAL:
+            seen[message] = [repeats + 1, last_logged]
+            return
+
+        seen[message] = [0, now]
+
+        if repeats:
+            message = f"{message} (repeated {int(repeats)} more times)"
+
+        logger.error(message)
+
+    def _flush_read_errors(self, fh: pyfuse3.FileHandleT) -> None:
+        """Report read errors held back for a file handle that is closing."""
+
+        for message, (repeats, _) in self._read_errors.pop(fh, {}).items():
+            if repeats:
+                logger.error(f"{message} (repeated {int(repeats)} more times)")
 
     async def _read_after_swap(
         self,
@@ -2223,6 +2246,7 @@ class RivenVFS(pyfuse3.Operations):
         """Release/close a file handle."""
 
         try:
+            self._flush_read_errors(fh)
             handle_info = self._file_handles.pop(fh, None)
             path = None
 
