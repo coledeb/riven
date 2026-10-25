@@ -1,19 +1,128 @@
 """Notification service for Riven"""
 
 import json
+import threading
 from datetime import datetime
+from pathlib import Path
 
 from kink import di
 from loguru import logger
 
 from program.apis.overseerr_api import OverseerrAPI
 from program.managers.sse_manager import sse_manager
-from program.media.item import Episode, MediaItem, Season
+from program.media.item import Episode, MediaItem, Season, Show
 from program.media.state import States
 from program.settings import settings_manager
 from program.core.runner import Runner
 from program.settings.models import NotificationsModel
+from program.utils import data_dir_path
 from program.utils.notify import GREEN, Notice, _tmdb_for_tvdb, item_title, send
+
+
+def _completed_size(item: MediaItem) -> int:
+    """How much of the item is complete: a show's completed episodes, else 1."""
+
+    if isinstance(item, Show):
+        return sum(
+            1
+            for season in item.seasons
+            for episode in season.episodes
+            if episode.last_state == States.Completed
+        )
+
+    return 1
+
+
+def _already_completed() -> dict[str, int]:
+    """Everything completed before the log existed, so it isn't announced again."""
+
+    from sqlalchemy import text
+
+    from program.db.db import db_session
+
+    with db_session() as session:
+        seen = {
+            str(item_id): 1
+            for (item_id,) in session.execute(
+                text(
+                    'SELECT id FROM "MediaItem" '
+                    "WHERE type = 'movie' AND last_state = 'Completed'"
+                )
+            )
+        }
+
+        for show_id, episodes in session.execute(
+            text(
+                'SELECT s.parent_id, count(*) FROM "Episode" e '
+                'JOIN "Season" s ON s.id = e.parent_id '
+                'JOIN "MediaItem" ei ON ei.id = e.id '
+                'JOIN "MediaItem" si ON si.id = s.parent_id '
+                "WHERE ei.last_state = 'Completed' AND si.last_state = 'Completed' "
+                "GROUP BY s.parent_id"
+            )
+        ):
+            seen[str(show_id)] = episodes
+
+    return seen
+
+
+class CompletionLog:
+    """
+    What was announced as completed. A re-sourced file takes its item out of
+    Completed and back, which announced the movie or the whole show again (once
+    per episode state change for shows). Now it's announced only the first time,
+    or for a show once it has more completed episodes than last time.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path or data_dir_path / "announced_completions.json"
+        self._lock = threading.Lock()
+        self._seen: dict[str, int] | None = None
+
+    def first(self, item: MediaItem) -> bool:
+        """Whether this completion is new; records it if so."""
+
+        try:
+            size = _completed_size(item)
+        except Exception as e:
+            # e.g. episodes not loaded: still announce a show only once
+            logger.debug(f"Couldn't count {item.log_string}'s completed episodes: {e}")
+            size = 1
+
+        with self._lock:
+            seen = self._load()
+            key = str(item.id)
+
+            if seen.get(key, 0) >= size:
+                return False
+
+            seen[key] = size
+            self._save()
+
+        return True
+
+    def _load(self) -> dict[str, int]:
+        if self._seen is None:
+            try:
+                self._seen = json.loads(self._path.read_text())
+            except FileNotFoundError:
+                try:
+                    self._seen = _already_completed()
+                except Exception as e:
+                    logger.warning(f"Couldn't read what's already completed: {e}")
+                    self._seen = {}
+
+                self._save()
+            except ValueError:
+                self._seen = {}
+
+        return self._seen
+
+    def _save(self) -> None:
+        try:
+            self._path.write_text(json.dumps(self._seen))
+        except OSError as e:
+            logger.warning(f"Couldn't save {self._path.name}: {e}")
 
 
 class NotificationService(Runner[NotificationsModel, None, None]):
@@ -29,6 +138,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
         self.initialized = False
         self.settings = settings_manager.settings.notifications
+        self.completions = CompletionLog()
         self.initialized = True
 
     @classmethod
@@ -75,7 +185,10 @@ class NotificationService(Runner[NotificationsModel, None, None]):
 
         # Handle completion notifications
         if item_to_notify.last_state == States.Completed:
-            self._notify_completion(item_to_notify)
+            if self.completions.first(item_to_notify):
+                self._notify_completion(item_to_notify)
+            else:
+                logger.debug(f"{item_to_notify.log_string} was already announced as completed")
 
     def _notify_state_change(
         self, item: MediaItem, previous_state: States, new_state: States
