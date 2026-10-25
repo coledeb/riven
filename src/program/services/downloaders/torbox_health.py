@@ -286,11 +286,8 @@ class TorBoxHealth:
 
         return "; ".join(reasons) or "unknown"
 
-    def summary(self) -> tuple[str, list[tuple[str, str]], bool]:
-        """
-        Notice title and fields saying in plain words why TorBox counts as
-        degraded, and whether the status page says it's maintenance.
-        """
+    def summary(self) -> tuple[str, list[tuple[str, str]]]:
+        """Notice title and fields saying in plain words why TorBox counts as degraded."""
 
         now = self._clock()
         fields = list[tuple[str, str]]()
@@ -322,7 +319,7 @@ class TorBoxHealth:
             maintenance = set(page.problems.values()) == {"maintenance"}
 
         title = "TorBox is down for maintenance" if maintenance else "TorBox is having problems"
-        return title, fields, maintenance
+        return title, fields
 
     # --- scheduled check ---
 
@@ -355,7 +352,7 @@ class TorBoxHealth:
             if now - self._announced_at >= NOTICE_GAP_SECONDS:
                 self._announced = True
                 self._announced_at = now
-                title, fields, maintenance = self.summary()
+                title, fields = self.summary()
                 self._notify(
                     Notice(
                         event="TorBox Degraded",
@@ -366,7 +363,7 @@ class TorBoxHealth:
                             "errors until it's back. Playback and new downloads "
                             "may fail meanwhile. You'll get a message when it recovers."
                         ),
-                        color=BLUE if maintenance else ORANGE,
+                        color=ORANGE,
                         fields=fields,
                         url=self.page_settings.url or None,
                     )
