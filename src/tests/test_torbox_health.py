@@ -696,6 +696,7 @@ def test_degraded_notice_says_maintenance_in_plain_words(clocked):
             checked_at=clocked.clock.now,
             problems={"API": "maintenance", "Database": "maintenance"},
             incidents=["Database upgrade"],
+            incident_urls={"Database upgrade": "https://status.example/incident/9"},
         )
     )
     clocked.record_failure("torrents/mylist: Timeout")
@@ -707,7 +708,8 @@ def test_degraded_notice_says_maintenance_in_plain_words(clocked):
         "A TorBox request failed: the torrent list timed out."
     )
     assert dict(fields)["TorBox status page"] == (
-        "API and Database: Maintenance\nDatabase upgrade"
+        "API and Database: Maintenance\n"
+        "[Database upgrade](https://status.example/incident/9)"
     )
 
 

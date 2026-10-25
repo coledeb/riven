@@ -106,6 +106,8 @@ class PageStatus:
     regions: dict[str, str] = field(default_factory=dict)
     # Open incident and ongoing maintenance titles, for messages
     incidents: list[str] = field(default_factory=list)
+    # Their pages: title -> URL
+    incident_urls: dict[str, str] = field(default_factory=dict)
 
 
 class TorBoxHealth:
@@ -315,7 +317,12 @@ class TorBoxHealth:
                 by_state.setdefault(_label(state), []).append(name)
 
             lines = [f"{' and '.join(names)}: {state}" for state, names in by_state.items()]
-            lines += page.incidents
+            lines += [
+                f"[{title}]({page.incident_urls[title]})"
+                if title in page.incident_urls
+                else title
+                for title in page.incidents
+            ]
             fields.append(("TorBox status page", "\n".join(lines)))
             maintenance = set(page.problems.values()) == {"maintenance"}
 
@@ -520,12 +527,14 @@ class TorBoxStatusPage:
                 page.regions[name[:-4].strip().lower()] = state
 
         started = datetime.fromtimestamp(now, timezone.utc)
-        page.incidents = [
-            r.title
+        ongoing = [
+            r
             for r in self.reports(data)
             if not r.resolved
             and (not r.maintenance or not r.starts_at or r.starts_at <= started)
         ]
+        page.incidents = [r.title for r in ongoing]
+        page.incident_urls = {r.title: self._report_url(r) for r in ongoing}
         return page
 
     def reports(self, data: dict) -> list[Report]:
@@ -578,6 +587,9 @@ class TorBoxStatusPage:
         return reports
 
     # --- posting ---
+
+    def _report_url(self, report: Report) -> str:
+        return f"{self.settings.url.rstrip('/')}/incident/{report.id}"
 
     def _load(self) -> dict[str, Any] | None:
         if self._state is None:
@@ -707,7 +719,7 @@ class TorBoxStatusPage:
             description=message,
             color=color,
             fields=fields,
-            url=f"{self.settings.url.rstrip('/')}/incident/{report.id}",
+            url=self._report_url(report),
             image=logo,
             timestamp=update[1] if update and update[1] else None,
         )
