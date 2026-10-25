@@ -157,6 +157,18 @@ def _host_offline(url: str) -> bool:
     )
 
 
+# Startup plan check: TorBox not answering within this doesn't stop it loading
+STARTUP_CHECK_TIMEOUT = 5
+# ...and the plan is checked again this often until TorBox answers
+PLAN_RECHECK_SECONDS = 5 * 60
+# TorBox's answers when the API key itself is wrong
+AUTH_ERRORS = {"BAD_TOKEN", "AUTH_ERROR", "NO_AUTH"}
+
+
+class TorBoxRejected(Exception):
+    """TorBox refused the API key, or the account has no paid plan."""
+
+
 def _error_text(response: SmartResponse, body: dict[str, Any]) -> str:
     return str(
         body.get("detail") or body.get("error") or f"HTTP {response.status_code}"
@@ -233,20 +245,82 @@ class TorBoxDownloader(DownloaderBase):
         return True
 
     def _validate_premium(self) -> bool:
-        user_info = self.get_user_info()
+        """
+        Check the account's plan. A rejected key or a free plan keeps TorBox
+        from loading. TorBox not answering (down, maintenance) doesn't: it
+        loads anyway, the failure counts towards the degraded hold (and its
+        notice), and the plan is checked again in the background.
+        """
 
-        if not user_info:
-            logger.error("Failed to get TorBox user info")
+        try:
+            problem = self._check_plan(STARTUP_CHECK_TIMEOUT)
+        except TorBoxRejected as e:
+            logger.error(str(e))
             return False
+
+        if problem:
+            from program.services.downloaders.torbox_health import health
+
+            logger.warning(
+                f"TorBox didn't answer at startup ({problem}); loading it anyway "
+                "and checking the plan again in the background"
+            )
+            health.record_failure(f"user/me: {problem}")
+            threading.Thread(
+                target=self._recheck_plan, name="torbox-plan-check", daemon=True
+            ).start()
+
+        return True
+
+    def _check_plan(self, timeout: float) -> str | None:
+        """
+        None if the account has a paid plan, else why TorBox didn't answer.
+
+        Raises:
+            TorBoxRejected: TorBox refused the key, or the plan is free.
+        """
+
+        assert self.api
+
+        try:
+            response = self.api.session.request("GET", "user/me", timeout=timeout)
+            body = response.json()
+        except Exception as e:
+            return type(e).__name__
+
+        if response.status_code in (401, 403) or body.get("error") in AUTH_ERRORS:
+            raise TorBoxRejected(
+                f"TorBox rejected the API key: {_error_text(response, body)}"
+            )
+
+        if not response.ok or not body.get("success"):
+            return _error_text(response, body)
+
+        user_info = self._user_info(body)
 
         if user_info.premium_status != "premium":
-            logger.error("TorBox paid plan required")
-            return False
+            raise TorBoxRejected("TorBox paid plan required")
 
         if user_info.premium_expires_at:
             logger.info(premium_days_left(user_info.premium_expires_at))
 
-        return True
+        return None
+
+    def _recheck_plan(self) -> None:
+        while True:
+            time.sleep(PLAN_RECHECK_SECONDS)
+
+            try:
+                problem = self._check_plan(30)
+            except TorBoxRejected as e:
+                logger.error(f"{e}; TorBox requests will fail")
+                return
+
+            if problem is None:
+                logger.info("TorBox answered; plan checked")
+                return
+
+            logger.debug(f"TorBox plan check: still no answer ({problem})")
 
     # --- rate limit handling ---
 
@@ -974,27 +1048,32 @@ class TorBoxDownloader(DownloaderBase):
                 )
                 return None
 
-            data = body.get("data") or {}
-
-            # plan: 0 Free, 1 Essential, 2 Pro, 3 Standard
-            plan = int(data.get("plan") or 0)
-            expires_at = _parse_time(data.get("premium_expires_at"))
-            days_left = (
-                max(0, (expires_at - datetime.now(tz=timezone.utc)).days)
-                if expires_at
-                else None
-            )
-
-            return UserInfo(
-                service="torbox",
-                email=data.get("email"),
-                user_id=data.get("id") or 0,
-                premium_status="premium" if plan > 0 else "free",
-                premium_expires_at=expires_at,
-                premium_days_left=days_left,
-                total_downloaded_bytes=data.get("total_bytes_downloaded"),
-                cooldown_until=_parse_time(data.get("cooldown_until")),
-            )
+            return self._user_info(body)
         except Exception as e:
             logger.error(f"Error getting TorBox user info: {e}")
             return None
+
+    @staticmethod
+    def _user_info(body: dict[str, Any]) -> UserInfo:
+        data = body.get("data") or {}
+
+        # plan: 0 Free, 1 Essential, 2 Pro, 3 Standard
+        plan = int(data.get("plan") or 0)
+        expires_at = _parse_time(data.get("premium_expires_at"))
+        days_left = (
+            max(0, (expires_at - datetime.now(tz=timezone.utc)).days)
+            if expires_at
+            else None
+        )
+
+        return UserInfo(
+            service="torbox",
+            email=data.get("email"),
+            user_id=data.get("id") or 0,
+            premium_status="premium" if plan > 0 else "free",
+            premium_expires_at=expires_at,
+            premium_days_left=days_left,
+            total_downloaded_bytes=data.get("total_bytes_downloaded"),
+            cooldown_until=_parse_time(data.get("cooldown_until")),
+        )
+

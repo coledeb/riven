@@ -63,6 +63,7 @@ PAGE_TIMEOUT = 10
 
 # Plain names for notices: "torrents/mylist: Timeout" -> "the torrent list timed out"
 _CALLS = {
+    "user/me": "the account check",
     "torrents/mylist": "the torrent list",
     "torrents/torrentinfo": "a torrent lookup",
     "torrents/createtorrent": "adding a torrent",

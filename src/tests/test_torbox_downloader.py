@@ -57,6 +57,7 @@ class FakeTorBox:
         self.calls = []
         self.create_response = None
         self.requestdl_response = None
+        self.user_response = None
 
     def add_existing(self, infohash, files):
         self.torrents[self.next_id] = torrent(self.next_id, infohash, files)
@@ -76,6 +77,11 @@ class FakeTorBox:
                 200,
                 json={"success": True, "error": None, "detail": detail, "data": data},
             )
+
+        if path == "user/me" and self.user_response is not None:
+            if isinstance(self.user_response, Exception):
+                raise self.user_response
+            return self.user_response
 
         if path == "user/me":
             return ok(
@@ -203,6 +209,38 @@ def downloader(fake):  # noqa: ARG001 - installs the fake API first
 def test_requires_paid_plan(fake):
     fake.plan = 0
     assert not TorBoxDownloader().initialized
+
+
+def test_rejected_key_doesnt_load(fake):
+    fake.user_response = httpx.Response(
+        200, json={"success": False, "error": "BAD_TOKEN", "detail": "bad", "data": None}
+    )
+    assert not TorBoxDownloader().initialized
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        httpx.Response(
+            200,
+            json={"success": False, "error": "DATABASE_ERROR", "detail": "maintenance", "data": None},
+        ),
+        httpx.Response(503, text="<html>maintenance</html>"),
+        httpx.ReadTimeout("slow"),
+    ],
+)
+def test_loads_while_torbox_doesnt_answer(fake, monkeypatch, answer):
+    from program.services.downloaders.torbox_health import health
+
+    rechecks = []
+    monkeypatch.setattr(TorBoxDownloader, "_recheck_plan", lambda self: rechecks.append(1))
+    failures = []
+    monkeypatch.setattr(health, "record_failure", failures.append)
+    fake.user_response = answer
+
+    assert TorBoxDownloader().initialized
+    assert rechecks == [1]
+    assert failures and failures[0].startswith("user/me: ")
 
 
 def test_user_info(downloader):
