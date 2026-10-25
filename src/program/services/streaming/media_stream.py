@@ -33,6 +33,7 @@ from .exceptions import (
     DebridServiceUnableToConnectException,
     DebridServiceRateLimitedException,
     DebridServiceRefusedRangeRequestException,
+    MediaStreamException,
     MediaStreamKilledException,
     DebridServiceLinkUnavailable,
 )
@@ -55,6 +56,30 @@ RATE_LIMIT_MAX_WAIT = 30.0
 # retrying once this much time has passed, since the reader is waiting
 REFRESH_RETRY_BACKOFFS = [2.0, 4.0]
 REFRESH_RETRY_MAX_SECONDS = 10.0
+
+
+def _http_error_summary(e: httpx.HTTPStatusError) -> str:
+    """'HTTP 422 from api.torbox.app/v1/api/torrents/requestdl' (no query: keys)."""
+
+    url = e.request.url
+    return f"HTTP {e.response.status_code} from {url.host}{url.path}"
+
+
+def _error_summary(e: BaseException) -> str:
+    """One readable line for a known stream error, with what caused it."""
+
+    message = f"{e.__class__.__name__}: {e}"
+    cause = e.__cause__
+
+    if isinstance(cause, httpx.HTTPStatusError):
+        return f"{message} ({_http_error_summary(cause)})"
+
+    if cause is not None and not isinstance(
+        cause, (DebridServiceException, MediaStreamException)
+    ):
+        return f"{message} ({cause.__class__.__name__}: {cause})".replace("\n", " ")
+
+    return message
 _host_paused_until: dict[str, float] = {}
 
 
@@ -298,9 +323,9 @@ class MediaStream:
             DebridServiceRefusedRangeRequestException,
             DebridServiceClosedConnectionException,
         ) as e:
-            logger.exception(
+            logger.warning(
                 self.build_log_message(
-                    f"{e.__class__.__name__} occurred whilst managing stream connection: {e}"
+                    f"Stream connection failed: {_error_summary(e)}"
                 )
             )
 
@@ -310,9 +335,9 @@ class MediaStream:
             DebridServiceForbiddenException,
             DebridServiceRangeNotSatisfiableException,
         ) as e:
-            logger.exception(
+            logger.warning(
                 self.build_log_message(
-                    f"{e.__class__.__name__} occurred whilst managing stream connection: {e}"
+                    f"Stream connection failed: {_error_summary(e)}"
                 )
             )
 
@@ -549,13 +574,24 @@ class MediaStream:
 
                             break
                     except FatalMediaStreamException as e:
-                        logger.exception(
+                        logger.error(
                             self.build_log_message(
-                                f"Fatal error from stream: {e.original_exception}. Terminating."
+                                f"Stream stopped: {_error_summary(e.original_exception)}"
                             )
                         )
 
                         self._stream_error.value = e.original_exception
+
+                        break
+                    except (DebridServiceException, MediaStreamException) as e:
+                        # Known stream failures: one line, no traceback
+                        logger.error(
+                            self.build_log_message(
+                                f"Stream stopped: {_error_summary(e)}"
+                            )
+                        )
+
+                        self._stream_error.value = e
 
                         break
                     except Exception as e:
@@ -922,7 +958,7 @@ class MediaStream:
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code
 
-                logger.warning(self.build_log_message(f"HTTP error {status_code}: {e}"))
+                logger.warning(self.build_log_message(_http_error_summary(e)))
 
                 if status_code == HTTPStatus.FORBIDDEN:
                     # Forbidden - could be rate limiting or auth issue, don't refresh URL
@@ -997,13 +1033,9 @@ class MediaStream:
                         provider=self.provider
                     ) from e
                 else:
-                    # Other unexpected status codes
-                    logger.warning(
-                        self.build_log_message(f"Unexpected HTTP {status_code}")
-                    )
-
+                    # Other unexpected status codes (already logged above)
                     raise DebridServiceException(
-                        "Unexpected error connecting to stream",
+                        f"Unexpected HTTP {status_code} connecting to stream",
                         provider=self.provider,
                     ) from e
             except (
