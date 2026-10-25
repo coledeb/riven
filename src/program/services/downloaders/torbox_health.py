@@ -61,6 +61,31 @@ NOTICE_GAP_SECONDS = 30 * 60
 HELD_LIST_LIMIT = 10
 PAGE_TIMEOUT = 10
 
+# Plain names for notices: "torrents/mylist: Timeout" -> "the torrent list timed out"
+_CALLS = {
+    "torrents/mylist": "the torrent list",
+    "torrents/torrentinfo": "a torrent lookup",
+    "torrents/createtorrent": "adding a torrent",
+    "torrents/checkcached": "a cache check",
+    "torrents/controltorrent": "a torrent change",
+    "torrents/requestdl": "a stream link",
+    "requestdl": "a stream link",
+}
+
+
+def _plain_failure(what: str) -> str:
+    endpoint, _, error = what.partition(": ")
+    call = _CALLS.get(endpoint.strip("/"), endpoint)
+
+    if "Timeout" in error:
+        return f"{call} timed out"
+    if error.startswith("HTTP"):
+        return f"{call} got a server error ({error})"
+    if "Connection" in error:
+        return f"{call} couldn't connect"
+
+    return f"{call}: {error}" if error else call
+
 
 def region_of(host: str | None) -> str | None:
     """The TorBox CDN region code of a host, lower case, or None."""
@@ -78,7 +103,7 @@ class PageStatus:
     problems: dict[str, str] = field(default_factory=dict)
     # CDN regions not operational: region code -> status
     regions: dict[str, str] = field(default_factory=dict)
-    # Open incident titles, for messages
+    # Open incident and ongoing maintenance titles, for messages
     incidents: list[str] = field(default_factory=list)
 
 
@@ -89,6 +114,7 @@ class TorBoxHealth:
         self._failures = deque[float]()
         self._own_until = 0.0
         self._own_reason = ""
+        self._own_count = 0
         self._last_failure = ""
         # CDN region -> when Riven last saw a streaming failure on its servers
         self._cdn_failed = dict[str, float]()
@@ -156,6 +182,7 @@ class TorBoxHealth:
             self._own_until = max(self._own_until, last + settings.clear_minutes * 60)
 
             if not already:
+                self._own_count = len(self._failures)
                 self._own_reason = (
                     f"{len(self._failures)} TorBox API call(s) failed in "
                     f"{settings.window_minutes} min (last: {self._last_failure})"
@@ -259,6 +286,41 @@ class TorBoxHealth:
 
         return "; ".join(reasons) or "unknown"
 
+    def summary(self) -> tuple[str, list[tuple[str, str]]]:
+        """Notice title and fields saying in plain words why TorBox counts as degraded."""
+
+        now = self._clock()
+        fields = list[tuple[str, str]]()
+
+        with self._lock:
+            count, last = self._own_count, _plain_failure(self._last_failure)
+            page = self._fresh_page(now)
+
+        if count <= 1:
+            seen = f"A TorBox request failed: {last}."
+        else:
+            seen = (
+                f"{count} TorBox requests failed within "
+                f"{self.settings.window_minutes} min; the last: {last}."
+            )
+
+        fields.append(("What Riven saw", seen))
+        maintenance = False
+
+        if page and page.problems:
+            by_state = dict[str, list[str]]()
+
+            for name, state in page.problems.items():
+                by_state.setdefault(_label(state), []).append(name)
+
+            lines = [f"{' and '.join(names)}: {state}" for state, names in by_state.items()]
+            lines += page.incidents
+            fields.append(("TorBox status page", "\n".join(lines)))
+            maintenance = set(page.problems.values()) == {"maintenance"}
+
+        title = "TorBox is down for maintenance" if maintenance else "TorBox is having problems"
+        return title, fields
+
     # --- scheduled check ---
 
     def check(self) -> None:
@@ -290,16 +352,19 @@ class TorBoxHealth:
             if now - self._announced_at >= NOTICE_GAP_SECONDS:
                 self._announced = True
                 self._announced_at = now
+                title, fields = self.summary()
                 self._notify(
                     Notice(
                         event="TorBox Degraded",
-                        title="TorBox is degraded: holding files",
+                        title=title,
                         description=(
-                            "Nothing is replaced, blacklisted or given up on because "
-                            "of TorBox errors until it recovers."
+                            "Riven is keeping your current files: nothing gets "
+                            "replaced, blacklisted or removed because of TorBox "
+                            "errors until it's back. Playback and new downloads "
+                            "may fail meanwhile. You'll get a message when it recovers."
                         ),
                         color=ORANGE,
-                        fields=[("Reason", reason)],
+                        fields=fields,
                         url=self.page_settings.url or None,
                     )
                 )
@@ -323,13 +388,13 @@ class TorBoxHealth:
                 self._notify(
                     Notice(
                         event="TorBox Recovered",
-                        title="TorBox recovered",
+                        title="TorBox is back",
                         description=(
-                            f"Degraded for about {minutes} min. Held actions are "
-                            "picked up by the normal checks."
+                            f"It had problems for about {minutes} min. Anything Riven "
+                            "held off on is picked up by the normal checks."
                         ),
                         color=GREEN,
-                        fields=[("Held", listed or "nothing")],
+                        fields=[("Held off on", listed or "nothing")],
                         url=self.page_settings.url or None,
                     )
                 )
@@ -453,8 +518,12 @@ class TorBoxStatusPage:
             elif name.upper().endswith(" CDN"):
                 page.regions[name[:-4].strip().lower()] = state
 
+        started = datetime.fromtimestamp(now, timezone.utc)
         page.incidents = [
-            r.title for r in self.reports(data) if not r.resolved and not r.maintenance
+            r.title
+            for r in self.reports(data)
+            if not r.resolved
+            and (not r.maintenance or not r.starts_at or r.starts_at <= started)
         ]
         return page
 

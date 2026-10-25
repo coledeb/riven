@@ -222,7 +222,7 @@ def test_degraded_and_recovered_are_announced_once_with_what_was_held(
 
     assert [n.event for n in sent] == ["TorBox Degraded", "TorBox Recovered"]
     assert sent[1].color == GREEN
-    assert "Backrooms" in dict(sent[1].fields)["Held"]
+    assert "Backrooms" in dict(sent[1].fields)["Held off on"]
 
 
 def test_flapping_is_announced_at_most_every_30_minutes(
@@ -266,7 +266,7 @@ def test_region_only_holds_dont_show_up_in_a_later_recovery(clocked, monkeypatch
     clocked.clock.now += 31 * 60
     clocked.check()
 
-    assert "old region hold" not in dict(sent[-1].fields)["Held"]
+    assert "old region hold" not in dict(sent[-1].fields)["Held off on"]
 
 
 # --- TorBox API calls feed it ---
@@ -687,3 +687,43 @@ def test_page_is_not_read_when_nothing_uses_it(hold_settings, monkeypatch, tmp_p
     p.run()
 
     assert calls == []
+
+
+def test_degraded_notice_says_maintenance_in_plain_words(clocked):
+    clocked.set_page(
+        PageStatus(
+            checked_at=clocked.clock.now,
+            problems={"API": "maintenance", "Database": "maintenance"},
+            incidents=["Database upgrade"],
+        )
+    )
+    clocked.record_failure("torrents/mylist: Timeout")
+
+    title, fields = clocked.summary()
+
+    assert title == "TorBox is down for maintenance"
+    assert dict(fields)["What Riven saw"] == (
+        "A TorBox request failed: the torrent list timed out."
+    )
+    assert dict(fields)["TorBox status page"] == (
+        "API and Database: Maintenance\nDatabase upgrade"
+    )
+
+
+def test_mass_missing_is_posted_once_and_not_while_degraded(tmp_path, monkeypatch):
+    importer = TorBoxAccountImport()
+    importer._state_file = tmp_path / "s.json"
+    sent = []
+    monkeypatch.setattr(importer, "_notify", sent.append)
+    referenced = {str(i): {i} for i in range(20)}
+    torbox = SimpleNamespace()
+
+    importer._handle_removed(torbox, referenced, on_account={})
+    importer._handle_removed(torbox, referenced, on_account={})
+    assert [n.event for n in sent] == ["TorBox Import Paused"]
+
+    # Listing back to normal, then short again while degraded: quiet
+    importer._handle_removed(torbox, referenced, on_account=dict.fromkeys(referenced))
+    degrade()
+    importer._handle_removed(torbox, referenced, on_account={})
+    assert len(sent) == 1

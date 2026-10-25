@@ -107,6 +107,8 @@ class TorBoxAccountImport:
         self._state_file = data_dir_path / "torbox_import.json"
         self._known = set[str]()
         self._notified = set[str]()
+        # Too many torrents missing at once was already reported
+        self._mass_missing = False
         self._loaded = False
 
     @property
@@ -793,23 +795,45 @@ class TorBoxAccountImport:
     ) -> set[int]:
         missing = [tid for tid in referenced if tid not in on_account]
 
+        if len(missing) <= MAX_REMOVED_PER_RUN:
+            self._mass_missing = False
+
         if not missing:
             return set()
 
         if len(missing) > MAX_REMOVED_PER_RUN:
+            from program.services.downloaders.torbox_health import health
+
             message = (
                 f"{len(missing)} torrents Riven uses are missing from TorBox at once; "
                 "not resetting anything (probably a TorBox API problem)"
             )
-            logger.warning(f"TorBox import: {message}")
-            self._notify(
-                Notice(
-                    event="TorBox Import Paused",
-                    title=f"{len(missing)} torrents missing from TorBox",
-                    description="That many at once is probably a TorBox API problem, so nothing was reset.",
-                    color=RED,
+
+            # Posted once per streak, and not at all while TorBox is degraded
+            # (the "degraded" notice already says files are kept)
+            if self._mass_missing:
+                logger.debug(f"TorBox import: {message}")
+            elif health.degraded():
+                logger.info(f"TorBox import: {message}; TorBox is degraded")
+                self._mass_missing = True
+            else:
+                logger.warning(f"TorBox import: {message}")
+                self._mass_missing = True
+                self._notify(
+                    Notice(
+                        event="TorBox Import Paused",
+                        title="TorBox's torrent list looks wrong",
+                        description=(
+                            f"{len(missing)} torrents Riven uses are missing from it. "
+                            "That many at once usually means a TorBox problem, not "
+                            "deletions, so Riven isn't re-downloading anything. It "
+                            "keeps checking; this won't be posted again until the "
+                            "list looks normal."
+                        ),
+                        color=RED,
+                    )
                 )
-            )
+
             return set()
 
         gone = list[str]()
