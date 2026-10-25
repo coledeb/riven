@@ -565,6 +565,34 @@ class Report:
     updates: list[tuple[str, datetime | None, str, str]]
 
 
+# The status page's own closing line, posted next to the closing note TorBox writes
+_AUTO_CLOSING = re.compile(r"^(maintenance|incident) (has )?(ended|resolved)\.?$", re.I)
+
+
+def _merge_closing(
+    new: list[tuple[str, datetime | None, str, str]],
+) -> list[tuple[str, datetime | None, str, str]]:
+    """
+    On resolution the status page can publish several updates at the same
+    moment (its automatic "Maintenance ended" plus TorBox's own note). Fold the
+    ones sharing the last update's timestamp into it, so the resolution is one
+    post; the automatic line is dropped when TorBox wrote something. Updates at
+    other times, or with no timestamp, are posted on their own as before.
+    """
+    last = new[-1]
+    if last[1] is None:
+        return new
+
+    group = [u for u in new if u[1] == last[1]]
+    if len(group) < 2:
+        return new
+
+    messages = list(dict.fromkeys(u[2].strip() for u in group if u[2].strip()))
+    written = [m for m in messages if not _AUTO_CLOSING.match(m)]
+    merged = (group[-1][0], last[1], "\n\n".join(written or messages), last[3])
+    return [u for u in new if u[1] != last[1]] + [merged]
+
+
 class TorBoxStatusPage:
     """Reads TorBox's status page; feeds TorBoxHealth and posts incidents."""
 
@@ -819,6 +847,9 @@ class TorBoxStatusPage:
                     self._notice(report, None, "resolved" if report.resolved else "start", logo)
                 )
                 continue
+
+            if newly_resolved and len(new) > 1:
+                new = _merge_closing(new)
 
             for index, update in enumerate(new):
                 first = before is None and index == 0

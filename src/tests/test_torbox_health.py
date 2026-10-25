@@ -756,6 +756,41 @@ def test_maintenance_is_labelled_as_such(page, monkeypatch):
     assert page.sent[0].color == BLUE  # as on the status page
 
 
+def test_closing_updates_published_together_are_one_resolved_post(page, monkeypatch):
+    notify_on(monkeypatch)
+    open_ = ("30", "Emergency", "maintenance", "maintenance", ["300"])
+    start = ("300", "Maintenance has begun", "2026-10-25T07:12:28Z", "maintenance")
+    page.announce(page_data([open_], [start]))
+
+    done = ("30", "Emergency", "maintenance", "resolved", ["300", "302", "301"])
+    page.announce(page_data([done], [
+        start,
+        ("302", "Maintenance ended", "2026-10-25T09:19:47Z", "operational"),
+        ("301", "The maintenance has been concluded. Thanks.", "2026-10-25T09:19:47Z", "operational"),
+    ]))
+
+    assert [(n.event, n.description) for n in page.sent] == [
+        ("TorBox Maintenance", "Maintenance has begun"),
+        ("TorBox Maintenance Resolved", "The maintenance has been concluded. Thanks."),
+    ]
+
+
+def test_updates_published_together_without_resolution_are_each_posted(page, monkeypatch):
+    notify_on(monkeypatch)
+    page.announce(page_data([DB_OPEN], [U1]))
+
+    both = ("10", "Database Degredation", "manual", "degraded", ["100", "101", "103"])
+    page.announce(page_data([both], [
+        U1,
+        ("101", "Still investigating", "2026-10-25T00:40:00Z", "degraded"),
+        ("103", "API is slow too", "2026-10-25T00:40:00Z", "degraded"),
+    ]))
+
+    assert [n.event for n in page.sent] == [
+        "TorBox Incident", "TorBox Incident Update", "TorBox Incident Update",
+    ]
+
+
 def test_run_feeds_health_and_survives_an_unreadable_page(hold_settings, tmp_path):
     response = SimpleNamespace(
         raise_for_status=lambda: None,
