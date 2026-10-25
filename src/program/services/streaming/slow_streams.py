@@ -328,7 +328,22 @@ class SlowStreamMonitor:
             self._refreshed[file.key] = (now, file.stats.host)
             self.health.clear(file.key)
 
-            if self._fresh_link(file):
+            fresh = self._fresh_link(file)
+
+            if fresh:
+                return
+
+            if fresh is None:
+                # The debrid service couldn't be asked: don't replace a file
+                # over that; try a fresh link again at the next slow check
+                self._refreshed.pop(file.key, None)
+                self._connection_problem(
+                    f"{file.title} is slow ({file.reason}, server "
+                    f"{file.stats.host}) and no fresh link could be fetched. "
+                    "This looks like a debrid service problem, so nothing was "
+                    "replaced.",
+                    now,
+                )
                 return
         elif file.stats.host and file.stats.host != refreshed[1]:
             # Slow on the old server and on the new one: probably the connection
@@ -358,8 +373,13 @@ class SlowStreamMonitor:
         self.health.clear(file.key)
         self._replace(file)
 
-    def _fresh_link(self, file: SlowFile) -> bool:
-        """Point the file's streams at a fresh download link; True if it changed."""
+    def _fresh_link(self, file: SlowFile) -> bool | None:
+        """Point the file's streams at a fresh download link.
+
+        Returns True if the link changed, False if there is no other link, and
+        None if the debrid service couldn't give one (API error or outage, or
+        the file is already being re-sourced).
+        """
 
         from program.services.filesystem.vfs import VFSDatabase
 
@@ -369,9 +389,23 @@ class SlowStreamMonitor:
             )
         except Exception as e:
             logger.debug(f"Slow streams: no fresh link for {file.title}: {e}")
-            return False
+            return None
+
+        if entry and entry.link_gone:
+            logger.info(
+                f"Slow streams: {file.title} is slow ({file.reason}); its link "
+                "is gone and it is already being re-sourced"
+            )
+            return None
 
         url = entry.url if entry else None
+
+        if entry and not url:
+            logger.info(
+                f"Slow streams: {file.title} is slow ({file.reason}, server "
+                f"{file.stats.host}); the debrid service gave no fresh link"
+            )
+            return None
 
         if not url or url == file.stats.url:
             logger.info(

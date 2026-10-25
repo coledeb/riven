@@ -196,6 +196,25 @@ def test_no_other_link_replaces_right_away(monitor):
     assert monitor.calls == [("fresh", "a.mkv"), ("replace", "a.mkv")]
 
 
+def test_no_fresh_link_from_the_service_only_notifies(monitor):
+    monitor.plex.playing = {"/a.mkv"}
+    monitor.fresh = None
+
+    stall_twice(monitor, "a.mkv")
+    monitor.check()
+
+    assert [c[0] for c in monitor.calls] == ["fresh", "notify"]
+    assert "Slow streams" in monitor.calls[1][1].title
+
+    # Next time it's slow, a fresh link is tried again, not a replace
+    monitor.fresh = True
+    stall_twice(monitor, "a.mkv")
+    monitor.check()
+
+    assert monitor.calls[-1] == ("fresh", "a.mkv")
+    assert ("replace", "a.mkv") not in monitor.calls
+
+
 def test_files_not_playing_in_plex_are_ignored(monitor):
     stall_twice(monitor, "a.mkv")
     monitor.check()
@@ -283,3 +302,35 @@ def test_transcoded_session_stalls_trigger_refresh_then_replacement(
     monitor.check()
     replace.assert_called_once()
     assert replace.call_args.args[0].sessions == [live_session]
+
+
+def test_fresh_link_tells_a_service_failure_from_no_other_link(monkeypatch):
+    from types import SimpleNamespace
+
+    from kink import di
+
+    from program.services.filesystem.vfs import VFSDatabase
+
+    monitor = SlowStreamMonitor(health=StreamHealth())
+    stats = SimpleNamespace(url="https://cdn1.example/x", host="cdn1.example")
+    file = SimpleNamespace(key="a.mkv", title="A", reason="slow", stats=stats)
+    original = di[VFSDatabase] if VFSDatabase in di else None
+
+    def answer(url, link_gone=False):
+        entry = SimpleNamespace(url=url, link_gone=link_gone)
+        di[VFSDatabase] = SimpleNamespace(
+            get_entry_by_original_filename=lambda **_: entry
+        )
+
+    try:
+        answer(None)
+        assert monitor._fresh_link(file) is None  # API error / outage
+        answer(None, link_gone=True)
+        assert monitor._fresh_link(file) is None  # already being re-sourced
+        answer(stats.url)
+        assert monitor._fresh_link(file) is False  # same link: nothing else
+        answer("https://cdn2.example/x")
+        assert monitor._fresh_link(file) is True
+    finally:
+        if original is not None:
+            di[VFSDatabase] = original
