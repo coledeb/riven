@@ -58,6 +58,14 @@ REFRESH_RETRY_BACKOFFS = [2.0, 4.0]
 REFRESH_RETRY_MAX_SECONDS = 10.0
 
 
+def _record_cdn_failure(host: str) -> None:
+    """Tell TorBox health a CDN server failed (only TorBox CDN hosts count)."""
+
+    from program.services.downloaders.torbox_health import health
+
+    health.record_cdn_failure(host)
+
+
 def _http_error_summary(e: httpx.HTTPStatusError) -> str:
     """'HTTP 422 from api.torbox.app/v1/api/torrents/requestdl' (no query: keys)."""
 
@@ -960,6 +968,9 @@ class MediaStream:
 
                 logger.warning(self.build_log_message(_http_error_summary(e)))
 
+                if status_code >= 500:
+                    _record_cdn_failure(host)
+
                 if status_code == HTTPStatus.FORBIDDEN:
                     # Forbidden - could be rate limiting or auth issue, don't refresh URL
                     logger.warning(
@@ -1042,6 +1053,9 @@ class MediaStream:
                 httpx.ConnectError,
                 httpx.InvalidURL,
             ) as e:
+                if isinstance(e, httpx.ConnectError):
+                    _record_cdn_failure(host)
+
                 logger.warning(
                     self.build_log_message(
                         f"Encountered {e.__class__.__name__}: {e} (attempt {attempt + 1}/{max_attempts})"
@@ -1069,6 +1083,9 @@ class MediaStream:
                 ) from e
             except (httpx.RemoteProtocolError, httpx.TimeoutException) as e:
                 # This can happen if the server closes the connection prematurely
+                if not isinstance(e, httpx.PoolTimeout):  # ours, not the server's
+                    _record_cdn_failure(host)
+
                 logger.warning(
                     self.build_log_message(
                         f"{e.__class__.__name__} error (attempt {attempt + 1}/{max_attempts}): {e}"

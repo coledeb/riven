@@ -6,12 +6,16 @@ TorBox health: hold known-good files while TorBox is degraded
 TorBox counts as degraded when ``failures`` API calls failed (timeouts,
 connection errors, HTTP 5xx; not 429 or a confirmed "not found") within
 ``window_minutes``, until ``clear_minutes`` after the last one. (The API
-circuit breaker alone doesn't count: it also trips on 429 rate limits.) With
-``use_status_page``, the status page adds to that: API or Database not
-operational is degraded too, and a CDN region not operational holds files on
-that region's servers (``nexus-238.cnam.tb-cdn.io`` -> CNAM). The page can only
-add caution: "operational" there never ends degraded while Riven still sees
-failures, and a page that can't be read (or is stale) is ignored.
+circuit breaker alone doesn't count: it also trips on 429 rate limits.)
+
+Riven's own failures always decide; the status page (``use_status_page``) only
+makes it react sooner, since status pages lag (both ways). API or Database not
+operational on the page: a single own failure is enough. A CDN region not
+operational on the page: files on that region's servers
+(``nexus-238.cnam.tb-cdn.io`` -> CNAM) are held once Riven itself sees a
+streaming failure there. Either way the hold ends ``clear_minutes`` after the
+last own failure, whatever the page still says; a stale or unreadable page is
+ignored.
 
 While degraded, the places that would replace, blacklist or give up on
 something because of a TorBox error ask ``hold()`` first and skip it: slow
@@ -85,6 +89,9 @@ class TorBoxHealth:
         self._failures = deque[float]()
         self._own_until = 0.0
         self._own_reason = ""
+        self._last_failure = ""
+        # CDN region -> when Riven last saw a streaming failure on its servers
+        self._cdn_failed = dict[str, float]()
         self._page: PageStatus | None = None
         # Notices
         self._announced = False
@@ -106,30 +113,53 @@ class TorBoxHealth:
     def record_failure(self, what: str) -> None:
         """A TorBox API call failed (timeout, connection error, HTTP 5xx)."""
 
-        settings = self.settings
-        now = self._clock()
-
         with self._lock:
-            self._failures.append(now)
+            self._failures.append(self._clock())
+            self._last_failure = what
+            self._evaluate()
 
-            while self._failures and now - self._failures[0] > settings.window_minutes * 60:
-                self._failures.popleft()
+    def record_cdn_failure(self, host: str | None) -> None:
+        """Streaming from a TorBox CDN server failed (timeout, connection error, 5xx)."""
 
-            already = self._own_until > now
+        region = region_of(host)
 
-            if already or len(self._failures) >= settings.failures:
-                self._own_until = now + settings.clear_minutes * 60
-
-                if not already:
-                    self._own_reason = (
-                        f"{len(self._failures)} TorBox API calls failed in "
-                        f"{settings.window_minutes} min (last: {what})"
-                    )
+        if region:
+            with self._lock:
+                self._cdn_failed[region] = self._clock()
 
     def set_page(self, page: PageStatus | None) -> None:
         with self._lock:
             if page is not None:
                 self._page = page
+                # A failure seen just before the page reported trouble counts
+                self._evaluate()
+
+    def _evaluate(self) -> None:
+        """Turn degraded on (or extend it) from own failures; call with the lock held."""
+
+        settings = self.settings
+        now = self._clock()
+
+        while self._failures and now - self._failures[0] > settings.window_minutes * 60:
+            self._failures.popleft()
+
+        if not self._failures:
+            return
+
+        page = self._fresh_page(now)
+        # The page reporting API/Database trouble lowers the bar to one failure
+        needed = 1 if page and page.problems else settings.failures
+        last = self._failures[-1]
+        already = self._own_until > now
+
+        if already or len(self._failures) >= needed:
+            self._own_until = max(self._own_until, last + settings.clear_minutes * 60)
+
+            if not already:
+                self._own_reason = (
+                    f"{len(self._failures)} TorBox API call(s) failed in "
+                    f"{settings.window_minutes} min (last: {self._last_failure})"
+                )
 
     # --- state ---
 
@@ -145,16 +175,13 @@ class TorBoxHealth:
         return page if now - page.checked_at <= max_age else None
 
     def degraded(self) -> bool:
-        """TorBox as a whole is degraded (own failures, or API/Database on the page)."""
+        """TorBox as a whole is degraded (decided by own failures; see above)."""
 
         if not self.settings.enabled:
             return False
 
-        now = self._clock()
-
         with self._lock:
-            page = self._fresh_page(now)
-            return self._own_until > now or bool(page and page.problems)
+            return self._own_until > self._clock()
 
     def holding(self, host: str | None = None, provider: str = PROVIDER) -> bool:
         """True if TorBox (or the CDN region of `host`) is degraded right now."""
@@ -170,9 +197,19 @@ class TorBoxHealth:
         if not region:
             return False
 
+        settings = self.settings
+        now = self._clock()
+
         with self._lock:
-            page = self._fresh_page(self._clock())
-            return bool(page and region in page.regions)
+            page = self._fresh_page(now)
+            failed = self._cdn_failed.get(region)
+            # The page says the region is down, and Riven saw it fail recently
+            return bool(
+                page
+                and region in page.regions
+                and failed is not None
+                and now - failed <= settings.clear_minutes * 60
+            )
 
     def hold(self, what: str, host: str | None = None, provider: str = PROVIDER) -> bool:
         """

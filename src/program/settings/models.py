@@ -234,10 +234,12 @@ class TorBoxDegradedHoldModel(Observable):
     use_status_page: bool = Field(
         default=True,
         description=(
-            "Also go by TorBox's status page (status_page.url): API or Database "
-            "not operational holds everything, a CDN region not operational holds "
-            "files on that region's servers. The page can start or extend a hold, "
-            "never end one Riven sees itself."
+            "Let TorBox's status page (status_page.url) make Riven react sooner. "
+            "Riven's own failures still decide, since status pages lag: with API "
+            "or Database reported down, one failed call is enough; with a CDN "
+            "region reported down, files on its servers are held once Riven sees "
+            "a streaming failure there. Holds end clear_minutes after Riven's "
+            "last failure, whatever the page says."
         ),
     )
     notify_urls: list[str] = Field(

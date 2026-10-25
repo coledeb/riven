@@ -88,7 +88,7 @@ def test_failures_in_the_window_turn_degraded_until_quiet(clocked):
 
     clocked.record_failure("c")
     assert clocked.degraded()
-    assert "3 TorBox API calls failed" in clocked.reason()
+    assert "3 TorBox API call(s) failed" in clocked.reason()
 
     clocked.clock.now += 29 * 60
     clocked.record_failure("d")  # still failing: extends
@@ -122,12 +122,39 @@ def test_only_torbox_files_are_held(clocked):
     assert not clocked.holding(provider="realdebrid")
 
 
-def test_status_page_api_problem_holds_and_a_stale_page_is_ignored(clocked):
+def test_status_page_alone_never_holds_but_lowers_the_bar_to_one_failure(clocked):
     clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "degraded"}))
+    assert not clocked.degraded()
+
+    clocked.record_failure("one")
     assert clocked.degraded()
     assert "status page: API degraded" in clocked.reason()
 
+
+def test_status_page_lagging_on_degraded_doesnt_keep_the_hold(clocked):
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "degraded"}))
+    clocked.record_failure("one")
+
+    for _ in range(4):  # page keeps saying degraded, our calls work again
+        clocked.clock.now += 8 * 60
+        clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "degraded"}))
+
+    assert not clocked.degraded()
+
+
+def test_failure_just_before_the_page_reports_trouble_counts(clocked):
+    clocked.record_failure("one")
+    assert not clocked.degraded()
+
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"Database": "downtime"}))
+    assert clocked.degraded()
+
+
+def test_stale_page_doesnt_lower_the_bar(clocked):
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "degraded"}))
     clocked.clock.now += 16 * 60  # page unreadable since
+
+    clocked.record_failure("one")
     assert not clocked.degraded()
 
 
@@ -141,19 +168,38 @@ def test_status_page_operational_never_ends_our_own_degraded(clocked):
 def test_status_page_ignored_when_turned_off(clocked, hold_settings, monkeypatch):
     monkeypatch.setattr(hold_settings, "use_status_page", False)
     clocked.set_page(PageStatus(checked_at=clocked.clock.now, problems={"API": "downtime"}))
+    clocked.record_failure("one")
 
     assert not clocked.degraded()
 
 
-def test_cdn_region_holds_only_files_on_its_servers(clocked):
+def test_cdn_region_holds_only_files_on_its_servers_after_own_failures(clocked):
+    cnam = "nexus-238.cnam.tb-cdn.io"
     clocked.set_page(PageStatus(checked_at=clocked.clock.now, regions={"cnam": "degraded"}))
 
-    assert region_of("nexus-238.cnam.tb-cdn.io") == "cnam"
+    assert region_of(cnam) == "cnam"
     assert region_of("example.com") is None
-    assert not clocked.degraded()
-    assert clocked.holding("nexus-238.cnam.tb-cdn.io")
+    assert not clocked.holding(cnam)  # the page alone isn't enough
+
+    clocked.record_cdn_failure("nexus-12.weur.tb-cdn.io")  # another region
+    assert not clocked.holding(cnam)
+
+    clocked.record_cdn_failure("nexus-5.cnam.tb-cdn.io")
+    assert clocked.holding(cnam)
     assert not clocked.holding("nexus-12.weur.tb-cdn.io")
     assert not clocked.holding()
+    assert not clocked.degraded()
+
+    # Page still says degraded, but no failure here for 30 min: released
+    clocked.clock.now += 31 * 60
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now, regions={"cnam": "degraded"}))
+    assert not clocked.holding(cnam)
+
+
+def test_cdn_failures_alone_dont_hold(clocked):
+    clocked.record_cdn_failure("nexus-5.cnam.tb-cdn.io")
+
+    assert not clocked.holding("nexus-5.cnam.tb-cdn.io")
 
 
 def test_degraded_and_recovered_are_announced_once_with_what_was_held(
@@ -211,6 +257,7 @@ def test_region_only_holds_dont_show_up_in_a_later_recovery(clocked, monkeypatch
     sent = []
     monkeypatch.setattr(clocked, "_notify", sent.append)
     clocked.set_page(PageStatus(checked_at=clocked.clock.now, regions={"cnam": "degraded"}))
+    clocked.record_cdn_failure("nexus-1.cnam.tb-cdn.io")
     assert clocked.hold("old region hold", host="nexus-1.cnam.tb-cdn.io")
     clocked.check()
 
@@ -325,6 +372,7 @@ def test_dead_link_on_a_degraded_cdn_region_is_kept(monkeypatch):
     health.set_page(
         PageStatus(checked_at=time.time(), regions={"cnam": "downtime"})
     )
+    health.record_cdn_failure("nexus-9.cnam.tb-cdn.io")
 
     def unrestrict(_link):
         raise DebridServiceLinkUnavailable(
@@ -617,6 +665,8 @@ def test_run_feeds_health_and_survives_an_unreadable_page(hold_settings, tmp_pat
     p = TorBoxStatusPage(get=lambda _url: response, state_file=tmp_path / "s.json")
 
     p.run()
+    assert not health.degraded()  # the page alone doesn't decide
+    health.record_failure("one")
     assert health.degraded()
 
     def broken(_url):
