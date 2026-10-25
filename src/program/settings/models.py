@@ -186,6 +186,15 @@ class TorBoxStatusPageModel(Observable):
             "Empty turns it off."
         ),
     )
+    monitor_url: str = Field(
+        default="https://uptime.ibbylabs.dev/v1/status",
+        description=(
+            "An independent uptime monitor that checks TorBox every few minutes "
+            "(IbbyLabs; one small request, no key). Used like the status page by "
+            "degraded_hold.use_status_page: only its TorBox API and Streaming "
+            "checks count. Empty turns it off."
+        ),
+    )
     interval_minutes: int = Field(
         default=3, ge=1, le=60, description="Minutes between status page checks"
     )
@@ -308,7 +317,10 @@ class TorBoxModel(Observable):
     )
     status_page: TorBoxStatusPageModel = Field(
         default_factory=lambda: TorBoxStatusPageModel(),
-        description="TorBox's status page: a degraded signal and optional incident posts",
+        description=(
+            "TorBox's status page and an uptime monitor: degraded signals, and "
+            "optional incident posts"
+        ),
     )
 
 

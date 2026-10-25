@@ -59,6 +59,7 @@ def hold_settings(monkeypatch):
     monkeypatch.setattr(s, "notify_urls", [])
     page = settings_manager.settings.downloaders.torbox.status_page
     monkeypatch.setattr(page, "url", "https://status.example")
+    monkeypatch.setattr(page, "monitor_url", "")
     monkeypatch.setattr(page, "interval_minutes", 3)
     monkeypatch.setattr(page, "notify", False)
     monkeypatch.setattr(page, "notify_urls", [])
@@ -827,3 +828,94 @@ def test_mass_missing_is_posted_once_and_not_while_degraded(tmp_path, monkeypatc
     degrade()
     importer._handle_removed(torbox, referenced, on_account={})
     assert len(sent) == 1
+
+
+# --- uptime monitor ---
+
+
+def monitor_data(stale=False, **states):
+    probes = [
+        {"id": pid, "state": states.get(pid.replace("-", "_"), "UP")}
+        for pid in ("torbox", "torbox-streaming", "torbox-webhooks", "torbox-website")
+    ]
+    return {
+        "freshness": {"stale": stale},
+        "services": [
+            {"id": "tbm", "probes": [{"id": "torbox", "state": "DOWN"}]},
+            {"id": "torbox-app", "maintenance": None, "probes": probes},
+        ],
+    }
+
+
+def test_monitor_reads_only_the_api_and_streaming_probes():
+    page = TorBoxStatusPage.parse_monitor(
+        monitor_data(torbox="DEGRADED", torbox_webhooks="DOWN", torbox_website="DOWN"), 5.0
+    )
+    assert page.problems == {"API (uptime monitor)": "degraded"}
+    assert page.regions == {}
+
+    page = TorBoxStatusPage.parse_monitor(monitor_data(torbox_streaming="DOWN"), 5.0)
+    assert page.problems == {}
+    assert page.regions == {"*": "downtime"}
+
+    assert TorBoxStatusPage.parse_monitor(monitor_data(stale=True, torbox="DOWN"), 5.0) is None
+
+
+def test_monitor_api_down_lowers_the_bar_alongside_the_status_page(clocked, hold_settings, monkeypatch):
+    page_settings = settings_manager.settings.downloaders.torbox.status_page
+    monkeypatch.setattr(page_settings, "monitor_url", "https://uptime.example/v1/status")
+    clocked.set_page(PageStatus(checked_at=clocked.clock.now))  # TorBox's page: all fine
+    clocked.set_page(
+        TorBoxStatusPage.parse_monitor(monitor_data(torbox="DOWN"), clocked.clock.now), "monitor"
+    )
+
+    assert not clocked.degraded()  # never on its own
+    clocked.record_failure("one")
+    assert clocked.degraded()
+    assert "API (uptime monitor) downtime" in clocked.reason()
+
+    # Turned off: ignored
+    clocked.__init__(clock=clocked.clock)
+    monkeypatch.setattr(page_settings, "monitor_url", "")
+    clocked.set_page(
+        TorBoxStatusPage.parse_monitor(monitor_data(torbox="DOWN"), clocked.clock.now), "monitor"
+    )
+    clocked.record_failure("one")
+    assert not clocked.degraded()
+
+
+def test_monitor_streaming_down_holds_any_region_after_own_failure(clocked, monkeypatch):
+    page_settings = settings_manager.settings.downloaders.torbox.status_page
+    monkeypatch.setattr(page_settings, "monitor_url", "https://uptime.example/v1/status")
+    clocked.set_page(
+        TorBoxStatusPage.parse_monitor(monitor_data(torbox_streaming="DOWN"), clocked.clock.now),
+        "monitor",
+    )
+    host = "nexus-1.weur.tb-cdn.io"
+
+    assert not clocked.holding(host)
+    clocked.record_cdn_failure(host)
+    assert clocked.holding(host)
+    assert not clocked.degraded()
+
+
+def test_run_reads_the_monitor_even_if_the_status_page_fails(hold_settings, monkeypatch, tmp_path):
+    page_settings = settings_manager.settings.downloaders.torbox.status_page
+    monkeypatch.setattr(page_settings, "monitor_url", "https://uptime.example/v1/status")
+    calls = []
+
+    def get(url):
+        calls.append(url)
+        if url.endswith("index.json"):
+            raise httpx.ConnectError("down")
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: monitor_data(torbox="DOWN"))
+
+    health.__init__()
+    p = TorBoxStatusPage(get=get, state_file=tmp_path / "s.json")
+    with pytest.raises(httpx.ConnectError):
+        p.run()
+
+    assert calls == ["https://status.example/index.json", "https://uptime.example/v1/status"]
+    health.record_failure("one")
+    assert health.degraded()
+    health.__init__()

@@ -17,6 +17,11 @@ streaming failure there. Either way the hold ends ``clear_minutes`` after the
 last own failure, whatever the page still says; a stale or unreadable page is
 ignored.
 
+An independent uptime monitor (``status_page.monitor_url``, IbbyLabs by
+default) is a second page read the same way: its TorBox API probe counts like
+API trouble, its TorBox Streaming probe like every CDN region being down. Its
+other probes (website, webhooks, usenet, ...) don't affect Riven and are ignored.
+
 While degraded, the places that would replace, blacklist or give up on
 something because of a TorBox error ask ``hold()`` first and skip it: slow
 source replacement, dead-link re-sourcing, download blacklisting, uncached
@@ -51,6 +56,14 @@ PROVIDER = "torbox"
 # services, or CDN regions that only hold files on their own servers).
 GLOBAL_RESOURCES = {"api", "database"}
 OK_STATES = {"operational"}
+
+# Uptime monitor (IbbyLabs /v1/status): service id, and its probes that matter:
+# probe id -> name for messages. Streaming isn't per region, so it's "*" (any).
+MONITOR_SERVICE = "torbox-app"
+MONITOR_API_PROBES = {"torbox": "API"}
+MONITOR_STREAM_PROBES = {"torbox-streaming"}
+MONITOR_STATES = {"DOWN": "downtime", "DEGRADED": "degraded", "MAINTENANCE": "maintenance"}
+ANY_REGION = "*"
 
 # "nexus-238.cnam.tb-cdn.io" -> "cnam"
 REGION_HOST = re.compile(r"\.([a-z0-9]+)\.tb-cdn\.io$", re.IGNORECASE)
@@ -122,7 +135,8 @@ class TorBoxHealth:
         self._last_failure = ""
         # CDN region -> when Riven last saw a streaming failure on its servers
         self._cdn_failed = dict[str, float]()
-        self._page: PageStatus | None = None
+        # Last read of each page: "status_page" (TorBox's own) / "monitor"
+        self._pages: dict[str, PageStatus] = {}
         # Notices
         self._announced = False
         self._announced_at = -NOTICE_GAP_SECONDS
@@ -185,10 +199,10 @@ class TorBoxHealth:
             with self._lock:
                 self._cdn_failed[region] = self._clock()
 
-    def set_page(self, page: PageStatus | None) -> None:
+    def set_page(self, page: PageStatus | None, source: str = "status_page") -> None:
         with self._lock:
             if page is not None:
-                self._page = page
+                self._pages[source] = page
                 # A failure seen just before the page reported trouble counts
                 self._evaluate()
 
@@ -246,15 +260,32 @@ class TorBoxHealth:
     # --- state ---
 
     def _fresh_page(self, now: float) -> PageStatus | None:
-        settings = self.settings
-        page = self._page
+        """What the fresh pages say together (None if no page is fresh or in use)."""
 
-        if not settings.use_status_page or page is None or not self.page_settings.url:
+        if not self.settings.use_status_page:
             return None
 
+        urls = {"status_page": self.page_settings.url, "monitor": self.page_settings.monitor_url}
         # Ignore a page we haven't managed to read for a while
         max_age = max(3 * self.page_settings.interval_minutes * 60, 15 * 60)
-        return page if now - page.checked_at <= max_age else None
+        fresh = [
+            page
+            for source, page in self._pages.items()
+            if urls.get(source) and now - page.checked_at <= max_age
+        ]
+
+        if len(fresh) <= 1:
+            return fresh[0] if fresh else None
+
+        merged = PageStatus(checked_at=max(p.checked_at for p in fresh))
+
+        for page in fresh:
+            merged.problems.update(page.problems)
+            merged.regions.update(page.regions)
+            merged.incidents += page.incidents
+            merged.incident_urls.update(page.incident_urls)
+
+        return merged
 
     def degraded(self) -> bool:
         """TorBox as a whole is degraded (decided by own failures; see above)."""
@@ -288,7 +319,7 @@ class TorBoxHealth:
             # The page says the region is down, and Riven saw it fail recently
             return bool(
                 page
-                and region in page.regions
+                and (region in page.regions or ANY_REGION in page.regions)
                 and failed is not None
                 and now - failed <= settings.clear_minutes * 60
             )
@@ -331,7 +362,13 @@ class TorBoxHealth:
             page = self._fresh_page(self._clock())
 
         region = region_of(host)
-        return bool(page and (page.problems or (region and region in page.regions)))
+        return bool(
+            page
+            and (
+                page.problems
+                or (region and (region in page.regions or ANY_REGION in page.regions))
+            )
+        )
 
     def reason(self, host: str | None = None) -> str:
         """Why TorBox counts as degraded, for messages."""
@@ -356,6 +393,8 @@ class TorBoxHealth:
                     reasons.append(
                         f"status page: {region.upper()} CDN {page.regions[region]}"
                     )
+                elif region and ANY_REGION in page.regions:
+                    reasons.append(f"uptime monitor: streaming {page.regions[ANY_REGION]}")
 
                 if reasons and page.incidents:
                     reasons.append(f"incident: {'; '.join(page.incidents)}")
@@ -550,7 +589,12 @@ class TorBoxStatusPage:
         settings = self.settings
         hold = settings_manager.settings.downloaders.torbox.degraded_hold
 
-        if not settings.url or not (settings.notify or (hold.enabled and hold.use_status_page)):
+        signal = hold.enabled and hold.use_status_page
+        # The monitor is only a degraded signal; TorBox's page also feeds notify
+        official = bool(settings.url) and (settings.notify or signal)
+        monitor = bool(settings.monitor_url) and signal
+
+        if not official and not monitor:
             return
 
         now = self._clock()
@@ -563,11 +607,28 @@ class TorBoxStatusPage:
 
         try:
             self._last_run = now
-            response = self._get(f"{settings.url.rstrip('/')}/index.json")
-            response.raise_for_status()
-            data = response.json()
-            health.set_page(self.parse(data, now))
-            self.announce(data)
+            error: Exception | None = None
+
+            if official:
+                try:
+                    response = self._get(f"{settings.url.rstrip('/')}/index.json")
+                    response.raise_for_status()
+                    data = response.json()
+                    health.set_page(self.parse(data, now))
+                    self.announce(data)
+                except Exception as e:
+                    error = e
+
+            if monitor:
+                try:
+                    response = self._get(settings.monitor_url)
+                    response.raise_for_status()
+                    health.set_page(self.parse_monitor(response.json(), now), "monitor")
+                except Exception as e:
+                    error = error or e
+
+            if error:
+                raise error
         finally:
             self._lock.release()
 
@@ -606,6 +667,39 @@ class TorBoxStatusPage:
         ]
         page.incidents = [r.title for r in ongoing]
         page.incident_urls = {r.title: self._report_url(r) for r in ongoing}
+        return page
+
+    @staticmethod
+    def parse_monitor(data: dict, now: float) -> PageStatus | None:
+        """The uptime monitor's TorBox API / Streaming probes (None if its data is stale)."""
+
+        if (data.get("freshness") or {}).get("stale"):
+            return None
+
+        page = PageStatus(checked_at=now)
+        service = next(
+            (s for s in data.get("services") or [] if s.get("id") == MONITOR_SERVICE),
+            None,
+        )
+
+        if service is None:
+            return page
+
+        for probe in service.get("probes") or []:
+            pid = probe.get("id")
+            state = MONITOR_STATES.get(str(probe.get("state") or "").upper())
+
+            if state is None:
+                continue
+
+            if probe.get("officialMaintenance") or service.get("maintenance"):
+                state = "maintenance"
+
+            if pid in MONITOR_API_PROBES:
+                page.problems[f"{MONITOR_API_PROBES[pid]} (uptime monitor)"] = state
+            elif pid in MONITOR_STREAM_PROBES:
+                page.regions[ANY_REGION] = state
+
         return page
 
     def reports(self, data: dict) -> list[Report]:
