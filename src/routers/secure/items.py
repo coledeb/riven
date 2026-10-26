@@ -815,12 +815,70 @@ class ReplaceResponse(MessageResponse):
     ids: list[int]
 
 
+REPLACE_STOP_MESSAGE = (
+    "This video is being switched to a new copy. Press play again in a minute "
+    "or two to continue where you left off."
+)
+
+
+def _replace_leaves(item: MediaItem) -> list[MediaItem]:
+    """The item plus, for a show or season, every episode in it."""
+
+    if isinstance(item, Show):
+        return [e for season in item.seasons for e in season.episodes] + [item]
+
+    if isinstance(item, Season):
+        return [*item.episodes, item]
+
+    return [item]
+
+
+def _stop_plex_playback(items: list[MediaItem]) -> None:
+    """Stop Plex sessions playing these items' files, with a message.
+
+    A replaced file can't be read until the new copy is swapped in, and a
+    session reading on would continue in a different file, so stop it first.
+    """
+
+    from program.services.updaters.plex import PlexUpdater
+
+    services = di[Program].services
+    vfs = services.filesystem.riven_vfs if services else None
+    plex = services.updater.services.get(PlexUpdater) if services else None
+
+    if not vfs or not plex or not plex.initialized:
+        return
+
+    for item in items:
+        paths = [
+            os.path.join(services.updater.library_path, p.lstrip("/"))
+            for p in vfs.video_paths(item)
+        ]
+
+        if not paths:
+            continue
+
+        try:
+            sessions = plex.sessions_playing(paths)
+        except Exception as e:
+            logger.warning(f"Replace: couldn't check Plex playback of {item.log_string}: {e}")
+            continue
+
+        for plex_session in sessions:
+            try:
+                plex_session.stop(reason=REPLACE_STOP_MESSAGE)
+                logger.info(f"Replace: stopped Plex playback of {item.log_string}")
+            except Exception as e:
+                logger.warning(f"Replace: couldn't stop Plex playback of {item.log_string}: {e}")
+
+
 @router.post(
     "/replace",
     summary="Replace Media Items",
     description=(
-        "Find another copy: blacklist each item's current source and re-scrape, "
-        "keeping the old file playable until the new one is in place"
+        "Find another copy: blacklist each item's current source and re-scrape. "
+        "The file stays listed and is swapped to the new copy; Plex playback of "
+        "it is stopped first, with a message"
     ),
     operation_id="replace_items",
     response_model=ReplaceResponse,
@@ -841,15 +899,10 @@ async def replace_items(
             if not item:
                 continue
 
-            def mutation(i: MediaItem, s: Session):
-                if isinstance(i, Show):
-                    leaves = [e for season in i.seasons for e in season.episodes]
-                elif isinstance(i, Season):
-                    leaves = list(i.episodes)
-                else:
-                    leaves = []
+            _stop_plex_playback(_replace_leaves(item))
 
-                for leaf in [*leaves, i]:
+            def mutation(i: MediaItem, s: Session):
+                for leaf in _replace_leaves(i):
                     leaf.blacklist_active_stream(BlacklistReason.MANUAL)
 
                 i.reset(keep_vfs=True)

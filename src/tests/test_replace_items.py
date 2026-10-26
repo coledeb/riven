@@ -31,7 +31,9 @@ def setup(monkeypatch, stored):
     def session():
         yield SimpleNamespace(get=lambda _cls, id: stored.get(id), commit=lambda: None)
 
-    program = SimpleNamespace(em=SimpleNamespace(add_event=events.append))
+    program = SimpleNamespace(
+        em=SimpleNamespace(add_event=events.append), services=None
+    )
     monkeypatch.setattr(items, "db_session", session)
     monkeypatch.setattr(items, "di", {items.Program: program})
     monkeypatch.setattr(
@@ -65,3 +67,42 @@ def test_replace_unknown_item_is_a_404(monkeypatch):
         trio.run(items.replace_items, IdListPayload(ids=["999"]))
 
     assert excinfo.value.status_code == 404
+
+
+class FakePlexSession:
+    def __init__(self, log):
+        self.log = log
+
+    def stop(self, reason):
+        self.log.append(("stop", reason))
+
+
+def test_replace_stops_plex_playback_first(monkeypatch):
+    from program.services.updaters.plex import PlexUpdater
+
+    movie = FakeItem(7)
+    setup(monkeypatch, {7: movie})
+    plex = SimpleNamespace(
+        initialized=True,
+        sessions_playing=lambda paths: [FakePlexSession(movie.calls)]
+        if paths == ["/mnt/lib/movies/M (2000)/M.mkv"]
+        else [],
+    )
+    items.di[items.Program].services = SimpleNamespace(
+        filesystem=SimpleNamespace(
+            riven_vfs=SimpleNamespace(
+                video_paths=lambda item: ["/movies/M (2000)/M.mkv"]
+            )
+        ),
+        updater=SimpleNamespace(
+            library_path="/mnt/lib", services={PlexUpdater: plex}
+        ),
+    )
+
+    trio.run(items.replace_items, IdListPayload(ids=["7"]))
+
+    assert movie.calls == [
+        ("stop", items.REPLACE_STOP_MESSAGE),
+        ("blacklist", items.BlacklistReason.MANUAL),
+        ("reset", True),
+    ]
