@@ -811,6 +811,72 @@ async def retry_items(
     )
 
 
+class ReplaceResponse(MessageResponse):
+    ids: list[int]
+
+
+@router.post(
+    "/replace",
+    summary="Replace Media Items",
+    description=(
+        "Find another copy: blacklist each item's current source and re-scrape, "
+        "keeping the old file playable until the new one is in place"
+    ),
+    operation_id="replace_items",
+    response_model=ReplaceResponse,
+)
+async def replace_items(
+    payload: Annotated[
+        IdListPayload,
+        Body(description="Replace items payload"),
+    ],
+) -> ReplaceResponse:
+    parsed_ids = handle_ids(payload.ids)
+    replaced = list[int]()
+
+    with db_session() as session:
+        for id in parsed_ids:
+            item = session.get(MediaItem, id)
+
+            if not item:
+                continue
+
+            def mutation(i: MediaItem, s: Session):
+                if isinstance(i, Show):
+                    leaves = [e for season in i.seasons for e in season.episodes]
+                elif isinstance(i, Season):
+                    leaves = list(i.episodes)
+                else:
+                    leaves = []
+
+                for leaf in [*leaves, i]:
+                    leaf.blacklist_active_stream(BlacklistReason.MANUAL)
+
+                i.reset(keep_vfs=True)
+
+            apply_item_mutation(
+                program=di[Program],
+                session=session,
+                item=item,
+                mutation_fn=mutation,
+                bubble_parents=True,
+            )
+
+            session.commit()
+
+            logger.info(f"Replace requested for {item.log_string}: finding another copy")
+            di[Program].em.add_event(Event("ReplaceItem", id))
+            replaced.append(id)
+
+    if not replaced:
+        raise HTTPException(status_code=404, detail="No items found")
+
+    return ReplaceResponse(
+        message=f"Finding another copy for items with id {replaced}",
+        ids=replaced,
+    )
+
+
 @router.post(
     "/retry_library",
     summary="Retry Library Items",

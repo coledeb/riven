@@ -49,6 +49,7 @@
 >
 > - **Debridio scraper (TorBox only).** Gets real torrent names and file lists for Debridio results from TorBox, with uploader tags stripped and Torrentio's title kept for the same torrent.
 > - **Torrentio language flags kept.** Flag emojis become words in titles, so language filters catch more dubs.
+> - **Replace a file.** `POST /api/v1/items/replace` blacklists the current source of a movie, episode, season or show and finds another copy; the old file stays playable until the new one is in place. The fork frontend has a Replace button for it.
 > - **Plex on another machine (optional).** `updaters.plex.path_mappings` maps Riven's paths to Plex's.
 > - **Replaced versions leave Plex's trash right away (optional).** With `updaters.plex.remove_replaced_versions`, once Plex has scanned a swapped file, the old version it keeps as unavailable is removed instead of waiting for Empty Trash. Only a version whose file is gone from Riven's library, while the item's new file is present, is removed. That check is also the share-down guard (Plex then finds no version at all), so a mass swap that fills the trash is still cleaned. Needs Plex's "Allow media deletion".
 > - **Settings changes no longer break the mount.** Saving settings keeps the running RivenVFS mount instead of mounting a second one.
