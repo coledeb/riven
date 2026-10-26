@@ -297,6 +297,35 @@ class OverseerrAPI:
 
         return True
 
+    def open_issues(self, page_size: int = 50) -> list[dict]:
+        """All open issues, newest first."""
+
+        issues = list[dict]()
+        skip = 0
+
+        while True:
+            response = self.session.get(
+                "api/v1/issue",
+                params={
+                    "take": page_size,
+                    "skip": skip,
+                    "sort": "added",
+                    "filter": "open",
+                },
+                timeout=30,
+            )
+
+            if not response.ok:
+                raise OverseerrAPIError(f"issue list failed: {response.status_code}")
+
+            data = response.json()
+            results = data.get("results") or []
+            issues.extend(results)
+            skip += len(results)
+
+            if not results or skip >= (data.get("pageInfo") or {}).get("results", 0):
+                return issues
+
     def delete_request(self, mediaId: int) -> bool:
         """Delete request from Overseerr"""
 

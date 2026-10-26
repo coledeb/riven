@@ -852,6 +852,39 @@ class OverseerrIssuesModel(Observable):
     )
 
 
+class OverseerrReplaceIssuesModel(Observable):
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Replace the copy of a movie, season or episode when a user reports "
+            "an issue for it in Overseerr/Seerr, then comment and resolve the issue "
+            "once the new copy is in. Whole-show reports only get a comment asking "
+            "which season or episode. Only issues opened after this is turned on count"
+        ),
+    )
+    interval: int = Field(default=60, ge=30, description="Seconds between checks")
+    cooldown_hours: int = Field(
+        default=6,
+        ge=0,
+        description=(
+            "Don't replace the same item again within this many hours; the "
+            "issue gets a comment and stays open for you instead"
+        ),
+    )
+    user_id: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Overseerr user the comments come from (needs the issue permissions; "
+            "0 = the API key's owner). Issues this user opens are never replaced"
+        ),
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description="Apprise URLs (e.g. a Discord webhook) told when a report starts a replace",
+    )
+
+
 class OverseerrModel(Updatable):
     enabled: bool = Field(default=False, description="Enable Overseerr integration")
     url: EmptyOrUrl = Field(
@@ -867,6 +900,10 @@ class OverseerrModel(Updatable):
     issues: OverseerrIssuesModel = Field(
         default_factory=lambda: OverseerrIssuesModel(),
         description="Report items Riven can't find a file for as Overseerr issues",
+    )
+    replace_issues: OverseerrReplaceIssuesModel = Field(
+        default_factory=lambda: OverseerrReplaceIssuesModel(),
+        description="Replace items users report issues for in Overseerr",
     )
 
 

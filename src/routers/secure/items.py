@@ -872,6 +872,31 @@ def _stop_plex_playback(items: list[MediaItem]) -> None:
                 logger.warning(f"Replace: couldn't stop Plex playback of {item.log_string}: {e}")
 
 
+def replace_item(session: Session, item: MediaItem, source: str = "Replace") -> None:
+    """Stop Plex playback, blacklist the current source(s) and re-source, keeping the file."""
+
+    _stop_plex_playback(_replace_leaves(item))
+
+    def mutation(i: MediaItem, s: Session):
+        for leaf in _replace_leaves(i):
+            leaf.blacklist_active_stream(BlacklistReason.MANUAL)
+
+        i.reset(keep_vfs=True)
+
+    apply_item_mutation(
+        program=di[Program],
+        session=session,
+        item=item,
+        mutation_fn=mutation,
+        bubble_parents=True,
+    )
+
+    session.commit()
+
+    logger.info(f"{source} requested for {item.log_string}: finding another copy")
+    di[Program].em.add_event(Event("ReplaceItem", item.id))
+
+
 @router.post(
     "/replace",
     summary="Replace Media Items",
@@ -899,26 +924,7 @@ async def replace_items(
             if not item:
                 continue
 
-            _stop_plex_playback(_replace_leaves(item))
-
-            def mutation(i: MediaItem, s: Session):
-                for leaf in _replace_leaves(i):
-                    leaf.blacklist_active_stream(BlacklistReason.MANUAL)
-
-                i.reset(keep_vfs=True)
-
-            apply_item_mutation(
-                program=di[Program],
-                session=session,
-                item=item,
-                mutation_fn=mutation,
-                bubble_parents=True,
-            )
-
-            session.commit()
-
-            logger.info(f"Replace requested for {item.log_string}: finding another copy")
-            di[Program].em.add_event(Event("ReplaceItem", id))
+            replace_item(session, item)
             replaced.append(id)
 
     if not replaced:

@@ -118,6 +118,16 @@ class ProgramScheduler:
                 "interval": overseerr.issues.interval
             }
 
+        # Replace what users report in Overseerr (checks the setting itself, so it can be toggled live)
+        if overseerr.enabled:
+            from program.services.content.overseerr_replace import (
+                overseerr_replace,
+            )
+
+            scheduled_functions[overseerr_replace] = {
+                "interval": overseerr.replace_issues.interval
+            }
+
         # Replace sources too slow to play (checks the setting itself, so it can be toggled live)
         from program.services.streaming.slow_streams import slow_stream_monitor
 
