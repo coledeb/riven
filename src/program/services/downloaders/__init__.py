@@ -128,6 +128,7 @@ class Downloader(Runner[None, DownloaderBase]):
         # Uncached TorBox downloads (last resort): see torbox_uncached.py
         uncached = self._uncached_downloads(available_services)
         finished_infohash: str | None = None
+        finished_download = None
 
         if uncached:
             try:
@@ -149,6 +150,7 @@ class Downloader(Runner[None, DownloaderBase]):
 
             if check and check.state == "done":
                 finished_infohash = check.infohash
+                finished_download = check.download
                 uncached.forget(item.id, finished_infohash)
 
         try:
@@ -220,6 +222,12 @@ class Downloader(Runner[None, DownloaderBase]):
 
                             download_success = True
                             stream_failed_on_all_services = False
+
+                            if (
+                                finished_download
+                                and stream.infohash.lower() == finished_infohash
+                            ):
+                                uncached.notify_finished(item, finished_download)
 
                             break
                         elif self._already_covered(item):

@@ -28,7 +28,7 @@ from loguru import logger
 
 from program.settings import settings_manager
 from program.utils import data_dir_path
-from program.utils.notify import PURPLE, RED, Notice, item_title, notice_for_item, send
+from program.utils.notify import GREEN, PURPLE, RED, Notice, item_title, notice_for_item, send
 from program.utils.request import CircuitBreakerOpen
 
 if TYPE_CHECKING:
@@ -68,6 +68,8 @@ class Check:
     state: Literal["wait", "done", "failed"]
     infohash: str | None = None
     run_at: datetime | None = None
+    # "done": the finished download, for the "finished" notice
+    download: UncachedDownload | None = None
 
 
 def _ancestor_ids(item: "MediaItem") -> list[str]:
@@ -241,7 +243,7 @@ class UncachedDownloads:
             logger.info(
                 f"Uncached TorBox download finished for {own.item_name}: {own.title}"
             )
-            return Check("done", infohash=own.infohash)
+            return Check("done", infohash=own.infohash, download=own)
 
         status = (info.status or "").lower()
 
@@ -386,6 +388,28 @@ class UncachedDownloads:
         )
 
         return Check("wait", run_at=self._next_check())
+
+    def notify_finished(self, item: "MediaItem", download: UncachedDownload) -> None:
+        """Tell the notify URLs a finished uncached download was added to the item."""
+
+        fields = [("Torrent", download.title)]
+
+        try:
+            took = datetime.now() - datetime.fromisoformat(download.started)
+            hours, minutes = divmod(int(took.total_seconds() // 60), 60)
+            fields.insert(0, ("Took", f"{hours} h {minutes} min" if hours else f"{minutes} min"))
+        except ValueError:
+            pass
+
+        self._notify(
+            Notice(
+                event="Uncached Download Finished",
+                title=item_title(item),
+                description="TorBox finished downloading it; it shows up in Plex shortly.",
+                color=GREEN,
+                fields=fields,
+            ).with_item(item, settings_manager.settings.notifications.link_url)
+        )
 
     def _next_check(self) -> datetime:
         return datetime.now() + timedelta(minutes=self.settings.check_minutes)

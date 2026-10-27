@@ -162,7 +162,7 @@ class TorBoxUncachedModel(Observable):
         default_factory=list,
         description=(
             "Apprise URLs (e.g. a Discord webhook) told when an uncached download "
-            "starts (with its reported seeders) or is given up"
+            "starts (with its reported seeders), finishes, or is given up"
         ),
     )
 

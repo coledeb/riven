@@ -241,7 +241,9 @@ def test_waits_without_new_checks_while_downloading(tb, leeching):
     assert leeching.uncached_adds == [LEECH]
 
 
-def test_finished_download_is_used(tb, leeching):
+def test_finished_download_is_used_and_notifies(tb, leeching, monkeypatch):
+    sent = []
+    monkeypatch.setattr(tb.uncached, "_notify", sent.append)
     item = movie([stream(LEECH, 40)])
     downloader = make_downloader(tb)
     run(downloader, item)
@@ -254,6 +256,11 @@ def test_finished_download_is_used(tb, leeching):
     assert result.run_at is None
     downloader.update_item_attributes.assert_called_once()
     assert tb.uncached.torrent_ids() == set()
+    assert [n.event for n in sent] == [
+        "Uncached Download Started",
+        "Uncached Download Finished",
+    ]
+    assert dict(sent[1].fields)["Took"] == "0 min"
 
 
 def test_stalled_download_is_dropped_and_next_candidate_started(tb, leeching, settings, monkeypatch):
