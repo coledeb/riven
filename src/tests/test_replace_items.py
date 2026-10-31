@@ -1,5 +1,6 @@
 """POST /items/replace blacklists the current source and re-sources, keeping the file."""
 
+import threading
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -106,3 +107,47 @@ def test_replace_stops_plex_playback_first(monkeypatch):
         ("blacklist", items.BlacklistReason.MANUAL),
         ("reset", True),
     ]
+
+
+def test_stop_plex_playback_soon_stops_sessions_without_blocking(monkeypatch):
+    done = threading.Event()
+    stopped = []
+
+    class Plex:
+        initialized = True
+
+        def __init__(self):
+            self.asked = []
+
+        def sessions_playing(self, paths):
+            self.asked.append(paths)
+            return [
+                SimpleNamespace(
+                    title="Deception",
+                    stop=lambda reason: (stopped.append(reason), done.set()),
+                )
+            ]
+
+    from program.services.updaters.plex import PlexUpdater
+
+    plex = Plex()
+    services = SimpleNamespace(
+        filesystem=SimpleNamespace(
+            riven_vfs=SimpleNamespace(video_paths=lambda item: [f"/shows/{item.id}.mkv"])
+        ),
+        updater=SimpleNamespace(library_path="/mnt", services={PlexUpdater: plex}),
+    )
+    monkeypatch.setattr(items, "di", {items.Program: SimpleNamespace(services=services)})
+
+    items.stop_plex_playback_soon([FakeItem(1), FakeItem(2)])
+
+    assert done.wait(5)
+    assert stopped == [items.REPLACE_STOP_MESSAGE]
+    # One lookup for all the files, not one per item
+    assert plex.asked == [["/mnt/shows/1.mkv", "/mnt/shows/2.mkv"]]
+
+
+def test_stop_plex_playback_soon_never_blocks_the_re_source(monkeypatch):
+    monkeypatch.setattr(items, "di", {})
+
+    items.stop_plex_playback_soon([FakeItem(1)])  # no Program: logged, not raised

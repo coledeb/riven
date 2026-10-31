@@ -326,11 +326,15 @@ def test_fresh_link_tells_a_service_failure_from_no_other_link(monkeypatch):
         answer(None)
         assert monitor._fresh_link(file) is None  # API error / outage
         answer(None, link_gone=True)
-        assert monitor._fresh_link(file) is None  # already being re-sourced
+        assert monitor._fresh_link(file) is True  # already being re-sourced
         answer(stats.url)
         assert monitor._fresh_link(file) is False  # same link: nothing else
         answer("https://cdn2.example/x")
         assert monitor._fresh_link(file) is True
+        di[VFSDatabase] = SimpleNamespace(
+            get_entry_by_original_filename=lambda **_: None
+        )
+        assert monitor._fresh_link(file) is True  # already swapped out
     finally:
         if original is not None:
             di[VFSDatabase] = original

@@ -1,6 +1,7 @@
 """TorBox degraded hold (downloaders.torbox.degraded_hold) and status page."""
 
 import time
+from collections import defaultdict
 from types import SimpleNamespace
 
 import httpx
@@ -448,6 +449,41 @@ def test_offline_server_is_re_sourced_while_degraded(monkeypatch):
     # TorBox itself says the server is gone: not held, so it goes on to re-source
     with pytest.raises(DebridServiceLinkUnavailable):
         database._refresh_unrestricted_url(entry, session=None)
+
+
+def test_dead_link_stops_plex_before_the_item_is_reset(monkeypatch):
+    from program.services.filesystem.vfs import db as vfs_db
+
+    order = []
+
+    def unrestrict(_link):
+        raise DebridServiceLinkUnavailable(
+            provider="torbox", link="x", reason="cdn_host_down", host="nexus-050.cnam.tb-cdn.io"
+        )
+
+    database = vfs_db.VFSDatabase.__new__(vfs_db.VFSDatabase)
+    database.downloader = SimpleNamespace(
+        services={"torbox": SimpleNamespace(key="torbox", unrestrict_link=unrestrict)}
+    )
+    item = SimpleNamespace(id=7)
+    entry = SimpleNamespace(
+        provider="torbox", download_url="x", original_filename="a.mkv", media_item=item
+    )
+    monkeypatch.setattr(
+        vfs_db, "stop_plex_playback_soon", lambda items: order.append(("stop", items))
+    )
+
+    def mutate(**_):
+        order.append(("reset", None))
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(vfs_db, "apply_item_mutation", mutate)
+    monkeypatch.setattr(vfs_db, "di", defaultdict(lambda: None))
+
+    with pytest.raises(RuntimeError):
+        database._refresh_unrestricted_url(entry, session=None)
+
+    assert order == [("stop", [item]), ("reset", None)]
 
 
 def test_offline_server_is_held_when_the_page_reports_trouble(clocked):

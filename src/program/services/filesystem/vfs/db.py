@@ -15,7 +15,7 @@ from program.services.streaming.exceptions import (
 from program.media.item import MediaItem
 from program.media.stream import BlacklistReason
 from program.types import Event
-from routers.secure.items import apply_item_mutation
+from routers.secure.items import apply_item_mutation, stop_plex_playback_soon
 from program.utils.debrid_cdn_url import DebridCDNUrl
 
 if TYPE_CHECKING:
@@ -184,6 +184,9 @@ class VFSDatabase:
                     item_id = entry.media_item.id
 
                     reason = BlacklistReason(e.reason)
+
+                    # A session reading on would continue in the new file
+                    stop_plex_playback_soon([entry.media_item])
 
                     def mutation(i: MediaItem, s: Session):
                         i.blacklist_active_stream(reason)

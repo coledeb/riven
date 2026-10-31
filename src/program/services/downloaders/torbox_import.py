@@ -860,12 +860,21 @@ class TorBoxAccountImport:
         ):
             return set()
 
-        from routers.secure.items import apply_item_mutation
+        from routers.secure.items import apply_item_mutation, stop_plex_playback_soon
 
         reset = set[int]()
 
         with db_session() as session:
             for tid in gone:
+                # A session reading on would continue in the new file
+                stop_plex_playback_soon(
+                    [
+                        item
+                        for item_id in referenced[tid]
+                        if (item := session.get(MediaItem, item_id))
+                    ]
+                )
+
                 for item_id in referenced[tid]:
                     item = session.get(MediaItem, item_id)
 

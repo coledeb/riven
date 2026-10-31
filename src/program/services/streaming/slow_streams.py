@@ -391,9 +391,9 @@ class SlowStreamMonitor:
     def _fresh_link(self, file: SlowFile) -> bool | None:
         """Point the file's streams at a fresh download link.
 
-        Returns True if the link changed, False if there is no other link, and
-        None if the debrid service couldn't give one (API error or outage, or
-        the file is already being re-sourced).
+        Returns True if nothing more is needed (the link changed, or the file
+        is being or was already re-sourced), False if there is no other link,
+        and None if the debrid service couldn't give one (API error or outage).
         """
 
         from program.services.filesystem.vfs import VFSDatabase
@@ -409,20 +409,25 @@ class SlowStreamMonitor:
         if entry and entry.link_gone:
             logger.info(
                 f"Slow streams: {file.title} is slow ({file.reason}); its link "
-                "is gone and it is already being re-sourced"
+                "is gone, so it is being re-sourced"
             )
-            return None
+            return True
 
-        url = entry.url if entry else None
+        if entry is None:
+            # These stats are for a file a re-source has already swapped out
+            logger.debug(f"Slow streams: {file.title} is no longer in use")
+            return True
 
-        if entry and not url:
+        url = entry.url
+
+        if not url:
             logger.info(
                 f"Slow streams: {file.title} is slow ({file.reason}, server "
                 f"{file.stats.host}); the debrid service gave no fresh link"
             )
             return None
 
-        if not url or url == file.stats.url:
+        if url == file.stats.url:
             logger.info(
                 f"Slow streams: {file.title} is slow ({file.reason}, server "
                 f"{file.stats.host}); no other link to try"

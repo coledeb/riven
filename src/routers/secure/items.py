@@ -1,4 +1,5 @@
 import os
+import threading
 
 from collections.abc import Callable, Sequence
 from datetime import datetime
@@ -870,6 +871,55 @@ def _stop_plex_playback(items: list[MediaItem]) -> None:
                 logger.info(f"Replace: stopped Plex playback of {item.log_string}")
             except Exception as e:
                 logger.warning(f"Replace: couldn't stop Plex playback of {item.log_string}: {e}")
+
+
+def stop_plex_playback_soon(items: list[MediaItem]) -> None:
+    """Stop Plex sessions playing these items' files, without waiting for Plex.
+
+    For a source that died: this can run on the VFS read path, and the re-source
+    goes ahead either way. Call it before the items are reset (they still need
+    their files for the paths).
+    """
+
+    from program.services.updaters.plex import PlexUpdater
+
+    try:
+        services = di[Program].services
+        vfs = services.filesystem.riven_vfs if services else None
+        plex = services.updater.services.get(PlexUpdater) if services else None
+
+        if not vfs or not plex or not plex.initialized:
+            return
+
+        paths = [
+            os.path.join(services.updater.library_path, p.lstrip("/"))
+            for item in items
+            for p in vfs.video_paths(item)
+        ]
+    except Exception as e:
+        logger.warning(f"Couldn't look up Plex playback to stop: {e}")
+        return
+
+    if not paths:
+        return
+
+    def stop() -> None:
+        try:
+            sessions = plex.sessions_playing(paths)
+        except Exception as e:
+            logger.warning(f"Couldn't check Plex playback to stop: {e}")
+            return
+
+        for plex_session in sessions:
+            try:
+                plex_session.stop(reason=REPLACE_STOP_MESSAGE)
+                logger.info(
+                    f"Stopped Plex playback of {plex_session.title}: its source died"
+                )
+            except Exception as e:
+                logger.warning(f"Couldn't stop Plex playback: {e}")
+
+    threading.Thread(target=stop, name="plex-stop-playback", daemon=True).start()
 
 
 def replace_item(session: Session, item: MediaItem, source: str = "Replace") -> None:
