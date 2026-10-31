@@ -94,6 +94,22 @@ MOUNT_WAIT_SECONDS = 10
 # Log the same read error for a file handle at most this often (seconds)
 READ_ERROR_LOG_INTERVAL = 60
 
+# What Plex shows when a re-source stops playback
+SWAP_STOP_MESSAGE = (
+    "This video is being switched to a new copy. Press play again to continue "
+    "where you left off."
+)
+SOURCE_LOST_STOP_MESSAGE = (
+    "This video's source stopped working and a new copy is taking a while to "
+    "find. Try again in a few minutes."
+)
+# How long a swap waits for Plex to stop playback, and how long Plex isn't asked
+# again after it didn't answer in time
+PLEX_STOP_WAIT_SECONDS = 5
+PLEX_STOP_SKIP_SECONDS = 60
+# A file read this recently counts as being played, even with no handle open
+RECENTLY_READ_SECONDS = 300
+
 
 if TYPE_CHECKING:
     from program.media.item import MediaItem
@@ -213,6 +229,11 @@ class RivenVFS(pyfuse3.Operations):
 
         # Seconds a held file may wait for its new source before it's removed
         self._hold_timeout = 600
+        # Held files whose playback was already stopped, so the swap needn't
+        self._hold_stop_sent = set[str]()
+        # original_filename -> when it last served data
+        self._last_read = dict[str, float]()
+        self._plex_stop_skip_until = 0.0
 
         # Set of paths currently being streamed
         self._active_streams = dict[str, MediaStream]()
@@ -580,9 +601,21 @@ class RivenVFS(pyfuse3.Operations):
             return False
 
         with self._tree_lock:
+            held = self._held.get(item.id)
+
+        if held and self._mid_playback(held[1]):
+            # Reads are still waiting: one let through after the swap would
+            # continue at the same offset in a different file. So stop now,
+            # with the new copy ready, rather than when the search began.
+            self._stop_plex_playback(
+                held[0], SWAP_STOP_MESSAGE, wait=PLEX_STOP_WAIT_SECONDS
+            )
+
+        with self._tree_lock:
             held = self._held.pop(item.id, None)
 
         if held:
+            self._forget_hold(held[1])
             self._swap_held_nodes(entry, held[0])
 
         # Register the MediaEntry (video file)
@@ -763,6 +796,9 @@ class RivenVFS(pyfuse3.Operations):
 
             del self._held[item_id]
 
+        self._forget_hold(original_filename)
+        self._stop_plex_playback(held[0], SOURCE_LOST_STOP_MESSAGE)
+
         for path in held[0]:
             self._unregister_clean_path(path)
 
@@ -770,6 +806,113 @@ class RivenVFS(pyfuse3.Operations):
             f"No new source for item {item_id} within {self._hold_timeout}s; "
             f"removed {len(held[0])} held file(s) from the VFS"
         )
+
+    def playback_stopped(self, original_filename: str) -> None:
+        """The caller stopped this file's playback before re-sourcing it.
+
+        Whoever presses play during the search is waiting for the new copy, so
+        the swap mustn't stop them again.
+        """
+
+        self._hold_stop_sent.add(original_filename)
+
+    def _forget_hold(self, original_filename: str) -> None:
+        self._hold_stop_sent.discard(original_filename)
+        self._last_read.pop(original_filename, None)
+
+    def _mid_playback(self, original_filename: str) -> bool:
+        """Whether a reader already got data from this file, so a swap would break it.
+
+        One that got none (just pressed play on a dead link) simply starts on
+        the new file. Reads count too with no handle open: not every reader
+        keeps its handle while paused.
+        """
+
+        if original_filename in self._hold_stop_sent:
+            return False
+
+        if any(
+            handle.get("read") == original_filename
+            for handle in list(self._file_handles.values())
+        ):
+            return True
+
+        last_read = self._last_read.get(original_filename)
+
+        return (
+            last_read is not None
+            and time.monotonic() - last_read < RECENTLY_READ_SECONDS
+        )
+
+    def _stop_plex_playback(
+        self, paths: list[str], message: str, wait: float = 0
+    ) -> None:
+        """Stop Plex sessions playing these VFS paths, as far as Plex lets us.
+
+        Waits at most ``wait`` seconds. A Plex that doesn't answer by then isn't
+        asked again for a while, so swapping a whole pack isn't held up file by file.
+        """
+
+        if time.monotonic() < self._plex_stop_skip_until:
+            return
+
+        thread = threading.Thread(
+            target=self._stop_plex_sessions,
+            args=(paths, message),
+            name="plex-stop-playback",
+            daemon=True,
+        )
+        thread.start()
+
+        if wait:
+            thread.join(wait)
+
+            if thread.is_alive():
+                self._plex_stop_skip_until = time.monotonic() + PLEX_STOP_SKIP_SECONDS
+                logger.warning(
+                    f"Plex didn't answer within {wait}s; swapping without stopping playback"
+                )
+
+    @staticmethod
+    def _stop_plex_sessions(paths: list[str], message: str) -> None:
+        from program.program import Program
+        from program.services.updaters.plex import PlexUpdater
+
+        try:
+            services = di[Program].services
+            plex = services.updater.services.get(PlexUpdater) if services else None
+
+            if not plex or not plex.initialized:
+                return
+
+            sessions = plex.sessions_playing(
+                [
+                    os.path.join(services.updater.library_path, path.lstrip("/"))
+                    for path in paths
+                ]
+            )
+        except Exception as e:
+            logger.warning(f"Couldn't check Plex playback of {paths}: {e}")
+            return
+
+        for session in sessions:
+            try:
+                session.stop(reason=message)
+                logger.info(f"Stopped Plex playback of {paths[0]}: {message}")
+            except Exception as e:
+                logger.warning(f"Couldn't stop Plex playback of {paths[0]}: {e}")
+
+    def _stop_playback_stuck_on(self, original_filename: str) -> None:
+        """A read gave up waiting for this held file's swap: tell whoever is playing it."""
+
+        if original_filename in self._hold_stop_sent:
+            return
+
+        for paths, name in list(self._held.values()):
+            if name == original_filename:
+                self._hold_stop_sent.add(original_filename)
+                self._stop_plex_playback(paths, SOURCE_LOST_STOP_MESSAGE)
+                return
 
     def pop_replaced(self, item_id: int) -> bool:
         """Return True once if the item's file was swapped in place by add()."""
@@ -828,6 +971,7 @@ class RivenVFS(pyfuse3.Operations):
                     await trio.sleep(1)
         except trio.TooSlowError:
             logger.error(f"Timeout waiting for a new source for inode={inode}")
+            self._stop_playback_stuck_on(old_filename)
 
             raise pyfuse3.FUSEError(errno.EIO) from None
 
@@ -2102,11 +2246,16 @@ class RivenVFS(pyfuse3.Operations):
             )
 
             try:
-                return await stream.read(
+                data = await stream.read(
                     request_start=request_start,
                     request_end=request_end,
                     request_size=request_size,
                 )
+
+                handle_info["read"] = original_filename
+                self._last_read[original_filename] = time.monotonic()
+
+                return data
             except* ChunksTooSlowException as e:
                 for exc in e.exceptions:
                     self._log_read_error(fh, stream, exc)

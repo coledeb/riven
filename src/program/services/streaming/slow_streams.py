@@ -392,15 +392,19 @@ class SlowStreamMonitor:
         """Point the file's streams at a fresh download link.
 
         Returns True if nothing more is needed (the link changed, or the file
-        is being or was already re-sourced), False if there is no other link,
-        and None if the debrid service couldn't give one (API error or outage).
+        was already re-sourced), False if there is no other link, and None if
+        the debrid service couldn't give one (API error or outage).
+
+        A fresh link that is gone says nothing about the one being played, which
+        is still answering: that only means there is no other link. If the
+        current link fails too, the read that hits it starts the re-source.
         """
 
         from program.services.filesystem.vfs import VFSDatabase
 
         try:
             entry = di[VFSDatabase].get_entry_by_original_filename(
-                original_filename=file.key, force_resolve=True
+                original_filename=file.key, force_resolve=True, reset_if_gone=False
             )
         except Exception as e:
             logger.debug(f"Slow streams: no fresh link for {file.title}: {e}")
@@ -408,10 +412,10 @@ class SlowStreamMonitor:
 
         if entry and entry.link_gone:
             logger.info(
-                f"Slow streams: {file.title} is slow ({file.reason}); its link "
-                "is gone, so it is being re-sourced"
+                f"Slow streams: {file.title} is slow ({file.reason}, server "
+                f"{file.stats.host}); its fresh link is gone, so no other link to try"
             )
-            return True
+            return False
 
         if entry is None:
             # These stats are for a file a re-source has already swapped out
@@ -478,6 +482,9 @@ class SlowStreamMonitor:
                 return
 
         program = self._program()
+
+        if vfs := program.services.filesystem.riven_vfs:
+            vfs.playback_stopped(file.key)
 
         with db_session() as session:
             item = session.get(MediaItem, file.item_id)

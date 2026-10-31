@@ -740,6 +740,7 @@ class TorBoxAccountImport:
                     logger.warning(f"TorBox import: couldn't stop Plex playback: {e}")
                     return False
 
+            vfs.playback_stopped(item.media_entry.original_filename)
             logger.info(f"TorBox import: stopped Plex playback of {item.log_string}")
 
         return True
@@ -860,21 +861,12 @@ class TorBoxAccountImport:
         ):
             return set()
 
-        from routers.secure.items import apply_item_mutation, stop_plex_playback_soon
+        from routers.secure.items import apply_item_mutation
 
         reset = set[int]()
 
         with db_session() as session:
             for tid in gone:
-                # A session reading on would continue in the new file
-                stop_plex_playback_soon(
-                    [
-                        item
-                        for item_id in referenced[tid]
-                        if (item := session.get(MediaItem, item_id))
-                    ]
-                )
-
                 for item_id in referenced[tid]:
                     item = session.get(MediaItem, item_id)
 

@@ -15,7 +15,7 @@ from program.services.streaming.exceptions import (
 from program.media.item import MediaItem
 from program.media.stream import BlacklistReason
 from program.types import Event
-from routers.secure.items import apply_item_mutation, stop_plex_playback_soon
+from routers.secure.items import apply_item_mutation
 from program.utils.debrid_cdn_url import DebridCDNUrl
 
 if TYPE_CHECKING:
@@ -123,8 +123,13 @@ class VFSDatabase:
         self,
         entry: MediaEntry,
         session: Session,
+        reset_if_gone: bool = True,
     ) -> tuple[str | None, bool]:
-        """refresh_unrestricted_url, plus whether the provider said the link is gone."""
+        """refresh_unrestricted_url, plus whether the provider said the link is gone.
+
+        With reset_if_gone off, a gone link is only reported: a caller just
+        looking for a better link while the current one still works.
+        """
 
         if not self.downloader:
             logger.warning("No downloader available to refresh unrestricted URL")
@@ -175,6 +180,9 @@ class VFSDatabase:
                 ):
                     return None, False
 
+                if not reset_if_gone:
+                    return None, True
+
                 logger.warning(
                     f"Failed to unrestrict URL for {entry.original_filename}: {e}"
                 )
@@ -184,9 +192,6 @@ class VFSDatabase:
                     item_id = entry.media_item.id
 
                     reason = BlacklistReason(e.reason)
-
-                    # A session reading on would continue in the new file
-                    stop_plex_playback_soon([entry.media_item])
 
                     def mutation(i: MediaItem, s: Session):
                         i.blacklist_active_stream(reason)
@@ -227,6 +232,7 @@ class VFSDatabase:
         self,
         original_filename: str,
         force_resolve: bool = False,
+        reset_if_gone: bool = True,
     ) -> GetEntryByOriginalFilenameResult | None:
         """
         Get entry metadata and download URL by original filename.
@@ -236,6 +242,7 @@ class VFSDatabase:
         Args:
             original_filename: Original filename from debrid provider
             force_resolve: If True, force refresh of unrestricted URL from provider
+            reset_if_gone: If False, a link that is gone doesn't re-source the item
 
         Returns:
             Dictionary with entry metadata and URLs, or None if not found
@@ -265,6 +272,7 @@ class VFSDatabase:
                     unrestricted_url, link_gone = self._refresh_unrestricted_url(
                         entry,
                         session=session,
+                        reset_if_gone=reset_if_gone,
                     )
 
                 return GetEntryByOriginalFilenameResult(

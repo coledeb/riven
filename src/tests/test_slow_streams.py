@@ -326,7 +326,7 @@ def test_fresh_link_tells_a_service_failure_from_no_other_link(monkeypatch):
         answer(None)
         assert monitor._fresh_link(file) is None  # API error / outage
         answer(None, link_gone=True)
-        assert monitor._fresh_link(file) is True  # already being re-sourced
+        assert monitor._fresh_link(file) is False  # fresh link gone: nothing else
         answer(stats.url)
         assert monitor._fresh_link(file) is False  # same link: nothing else
         answer("https://cdn2.example/x")
