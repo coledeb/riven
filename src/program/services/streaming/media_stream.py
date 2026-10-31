@@ -93,6 +93,8 @@ def _error_summary(e: BaseException) -> str:
 _host_paused_until: dict[str, float] = {}
 # 429s in a row from each host
 _host_429_streak: dict[str, int] = {}
+# While a host is rate limiting, one connection at a time tries it (see _enter_host)
+_host_gates: dict[str, trio.Lock] = {}
 
 
 class _CallerError(Exception):
@@ -147,6 +149,52 @@ async def _wait_for_host(host: str) -> None:
     remaining = _host_paused_until.get(host, 0.0) - trio.current_time()
     if remaining > 0:
         await trio.sleep(min(remaining, RATE_LIMIT_MAX_WAIT))
+
+
+def _next_429_streak(host: str) -> int:
+    """Count a 429 from this host; a burst of parallel requests counts once."""
+
+    streak = _host_429_streak.get(host, 0)
+
+    if streak == 0 or trio.current_time() >= _host_paused_until.get(host, 0.0):
+        streak += 1
+
+    _host_429_streak[host] = streak
+
+    return streak
+
+
+async def _enter_host(host: str) -> trio.Lock | None:
+    """Wait until this connection may try the host; returns the gate it holds, if any.
+
+    Waiting out a pause isn't enough: every waiting read would retry the moment
+    it ends and get rate limited again. So while a host is rate limiting only
+    one connection tries it, and the rest follow one by one once it answers.
+    """
+
+    await _wait_for_host(host)
+
+    if host not in _host_429_streak:
+        return None
+
+    gate = _host_gates.setdefault(host, trio.Lock())
+    await gate.acquire()
+
+    try:
+        # The pause may have grown while waiting for the gate
+        await _wait_for_host(host)
+    except BaseException:
+        gate.release()
+        raise
+
+    return gate
+
+
+def _leave_host(gate: trio.Lock | None) -> None:
+    """Let the next connection try the host (the request got its answer)."""
+
+    if gate is not None:
+        gate.release()
 
 
 type ReadType = Literal[
@@ -922,7 +970,7 @@ class MediaStream:
                 host = httpx.URL(self.target_url.value).host
             except httpx.InvalidURL:
                 host = ""  # handled as InvalidURL by the request below
-            await _wait_for_host(host)
+            gate = await _enter_host(host)
 
             try:
                 async with self.async_client.stream(
@@ -933,6 +981,8 @@ class MediaStream:
                 ) as stream:
                     stream.raise_for_status()
                     _host_429_streak.pop(host, None)
+                    _leave_host(gate)
+                    gate = None
 
                     content_length = stream.headers.get("Content-Length")
 
@@ -1037,8 +1087,7 @@ class MediaStream:
                 elif status_code == HTTPStatus.TOO_MANY_REQUESTS:
                     # Rate limited - pause every connection to this host
                     # (Retry-After if given, else 2/4/8 s), don't refresh URL
-                    streak = _host_429_streak.get(host, 0) + 1
-                    _host_429_streak[host] = streak
+                    streak = _next_429_streak(host)
                     delay = _retry_after_seconds(e.response)
                     if delay is None:
                         delay = RATE_LIMIT_BACKOFFS[
@@ -1137,6 +1186,8 @@ class MediaStream:
                     "Unexpected error connecting to stream",
                     provider=self.provider,
                 ) from e
+            finally:
+                _leave_host(gate)
 
         raise DebridServiceException(
             "Unexpected error connecting to stream",
