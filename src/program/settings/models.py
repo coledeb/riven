@@ -276,14 +276,24 @@ AutoCleanTime = Literal[
 ]
 
 
-def _labelled_enum(label: Callable[[str], str]) -> Callable[[dict[str, Any]], None]:
-    """Show an enum as a dropdown with friendly labels (oneOf const/title)."""
+def _labelled_enum(
+    label: Callable[[str], str], show_if: dict[str, list[str]] | None = None
+) -> Callable[[dict[str, Any]], None]:
+    """
+    Show an enum as a dropdown with friendly labels (oneOf const/title).
+
+    ``show_if`` ({sibling field: [values]}) makes the settings page show the
+    field only while that sibling has one of those values.
+    """
 
     def apply(schema: dict[str, Any]) -> None:
         values = schema.pop("enum", None)
 
         if values:
             schema["oneOf"] = [{"const": v, "title": label(v)} for v in values]
+
+        if show_if:
+            schema["x-show-if"] = show_if
 
     return apply
 
@@ -307,7 +317,8 @@ class TorBoxAutoCleanModel(Observable):
         default="04:00",
         description="Time of day to run, in Riven's time zone",
         json_schema_extra=_labelled_enum(
-            lambda t: f"{int(t[:2]) % 12 or 12}:{t[3:]} {'AM' if int(t[:2]) < 12 else 'PM'}"
+            lambda t: f"{int(t[:2]) % 12 or 12}:{t[3:]} {'AM' if int(t[:2]) < 12 else 'PM'}",
+            show_if={"schedule": ["daily", "weekly"]},
         ),
     )
     weekday: Literal[
@@ -315,7 +326,7 @@ class TorBoxAutoCleanModel(Observable):
     ] = Field(
         default="sunday",
         description="Day of the week for the weekly schedule",
-        json_schema_extra=_labelled_enum(str.capitalize),
+        json_schema_extra=_labelled_enum(str.capitalize, show_if={"schedule": ["weekly"]}),
     )
     min_age_hours: int = Field(
         default=24,
