@@ -270,6 +270,77 @@ class TorBoxDegradedHoldModel(Observable):
     )
 
 
+# Half-hour steps for the autoclean time picker
+AutoCleanTime = Literal[
+    tuple(f"{h:02d}:{m:02d}" for h in range(24) for m in (0, 30))  # type: ignore[valid-type]
+]
+
+
+def _labelled_enum(label: Callable[[str], str]) -> Callable[[dict[str, Any]], None]:
+    """Show an enum as a dropdown with friendly labels (oneOf const/title)."""
+
+    def apply(schema: dict[str, Any]) -> None:
+        values = schema.pop("enum", None)
+
+        if values:
+            schema["oneOf"] = [{"const": v, "title": label(v)} for v in values]
+
+    return apply
+
+
+class TorBoxAutoCleanModel(Observable):
+    schedule: Literal["off", "daily", "weekly"] = Field(
+        default="off",
+        description=(
+            "Delete every torrent on the TorBox account that no Riven file uses, "
+            "once a day or once a week at the time below. Unlike "
+            "remove_unused_torrents this includes torrents Riven didn't add "
+            "(Debrid Media Manager, older copies left after a replace), so leave "
+            "it off if other tools share the account. Deleted torrents are listed "
+            "in data/torbox_autoclean/ so they can be re-added by hash."
+        ),
+        json_schema_extra=_labelled_enum(
+            {"off": "Off (don't autoclean)", "daily": "Daily", "weekly": "Weekly"}.get
+        ),
+    )
+    time: AutoCleanTime = Field(
+        default="04:00",
+        description="Time of day to run, in Riven's time zone",
+        json_schema_extra=_labelled_enum(
+            lambda t: f"{int(t[:2]) % 12 or 12}:{t[3:]} {'AM' if int(t[:2]) < 12 else 'PM'}"
+        ),
+    )
+    weekday: Literal[
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"
+    ] = Field(
+        default="sunday",
+        description="Day of the week for the weekly schedule",
+        json_schema_extra=_labelled_enum(str.capitalize),
+    )
+    min_age_hours: int = Field(
+        default=24,
+        ge=1,
+        description=(
+            "Never delete a torrent added less than this many hours ago (one just "
+            "added in Debrid Media Manager may not be linked yet)"
+        ),
+    )
+    notify_urls: list[str] = Field(
+        default_factory=list,
+        description="Apprise URLs (e.g. a Discord webhook) told what each run deleted",
+    )
+
+    @field_validator("time", mode="before")
+    @classmethod
+    def _pad_time(cls, value: Any) -> Any:
+        # Accept "4:30" for "04:30"
+        if isinstance(value, str) and ":" in value:
+            hour, _, minute = value.strip().partition(":")
+            return f"{hour.zfill(2)}:{minute}"
+
+        return value
+
+
 class TorBoxModel(Observable):
     enabled: bool = Field(default=False, description="Enable TorBox")
     api_key: str = Field(default="", description="TorBox API key")
@@ -294,6 +365,10 @@ class TorBoxModel(Observable):
         default=30,
         ge=5,
         description="Minutes a torrent must stay unused before it is deleted",
+    )
+    autoclean: TorBoxAutoCleanModel = Field(
+        default_factory=lambda: TorBoxAutoCleanModel(),
+        description="Scheduled cleanup of every unused torrent on the account",
     )
     account_import: TorBoxImportModel = Field(
         default_factory=lambda: TorBoxImportModel(),

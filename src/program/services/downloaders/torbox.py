@@ -40,6 +40,7 @@ from program.utils.request import (
 )
 
 from .shared import DownloaderBase, premium_days_left
+from .torbox_autoclean import AutoClean
 from .torbox_uncached import UncachedDownloads
 
 # TorBox documents 300 requests/min per API key. Stay under it so other
@@ -230,6 +231,7 @@ class TorBoxDownloader(DownloaderBase):
 
         self.initialized = self.validate()
         self.uncached = UncachedDownloads(self)
+        self.autoclean = AutoClean(self)
 
     def validate(self) -> bool:
         """
@@ -784,14 +786,17 @@ class TorBoxDownloader(DownloaderBase):
             links=[f.download_url for f in files.values()],
         )
 
-    def delete_torrent(self, torrent_id: int | str) -> None:
+    def delete_torrent(
+        self, torrent_id: int | str, include_foreign: bool = False
+    ) -> None:
         """
         Delete a torrent on TorBox.
 
         With ``only_manage_own_torrents`` on (the default), torrents Riven
         didn't add are left alone: other tools sharing the account
-        may still be using them. With it off, those are deleted too. A torrent
-        Riven's library still links to is never deleted.
+        may still be using them. With it off, or with ``include_foreign``
+        (autoclean), those are deleted too. A torrent Riven's library still
+        links to is never deleted.
 
         Raises:
             TorBoxError: If the API returns a failing status.
@@ -802,7 +807,11 @@ class TorBoxDownloader(DownloaderBase):
         with self._lock:
             created = torrent_id in self._created
 
-        if not created and self.settings.only_manage_own_torrents:
+        if (
+            not created
+            and not include_foreign
+            and self.settings.only_manage_own_torrents
+        ):
             logger.debug(
                 f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
             )

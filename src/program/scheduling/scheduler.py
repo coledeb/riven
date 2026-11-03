@@ -99,6 +99,9 @@ class ProgramScheduler:
         if torbox.enabled:
             scheduled_functions[self._remove_unused_torrents] = {"interval": 10 * 60}
 
+            # Scheduled cleanup of every unused torrent (reads its schedule live)
+            scheduled_functions[self._torbox_autoclean] = {"interval": 60}
+
             # TorBox degraded hold + status page (both check their settings themselves)
             from program.services.downloaders.torbox_health import (
                 torbox_health_check,
@@ -278,6 +281,18 @@ class ProgramScheduler:
         for service in services.downloader.services.values():
             if service.key == "torbox" and service.initialized:
                 service.remove_unused()
+
+    def _torbox_autoclean(self) -> None:
+        """Run TorBox's scheduled autoclean when its daily/weekly slot is due."""
+
+        services = self.program.services
+
+        if not services:
+            return
+
+        for service in services.downloader.services.values():
+            if service.key == "torbox" and service.initialized:
+                service.autoclean.tick()
 
     def _retry_library(self) -> None:
         """Retry items that failed to download by emitting events into the EM."""
