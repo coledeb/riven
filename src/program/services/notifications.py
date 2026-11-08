@@ -283,7 +283,7 @@ class NotificationService(Runner[NotificationsModel, None, None]):
             title=item_title(item),
             description=f"Riven completed this {item.type}.",
             color=GREEN,
-            fields=[("Requested Via", item.requested_by or "")],
+            fields=[("Added Via", item.requested_by or "")],
         ).with_item(item, self.settings.link_url)
 
         send(self.settings.service_urls, notice)
