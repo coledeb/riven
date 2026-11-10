@@ -42,7 +42,7 @@ from program.db.db import db_session
 from program.media.item import Episode, MediaItem, Movie, Season, Show
 from program.media.media_entry import MediaEntry
 from program.media.stream import BlacklistReason
-from program.utils.notify import ORANGE, RED, Notice, send
+from program.utils.notify import GREEN, ORANGE, RED, Notice, item_title, send
 from program.media.state import States
 from program.services.downloaders.models import DownloadedTorrent
 from program.services.downloaders.torbox import TorBoxNotFound
@@ -514,6 +514,8 @@ class TorBoxAccountImport:
             processed = set[str]()
             downloader = self._program().services.downloader
 
+            replaced = self._replaced_notice(item, targets, torrent, bool(playing))
+
             if targets:
                 self._unblacklist(targets, infohash)
                 self._clear_for_replace(session, targets)
@@ -545,7 +547,68 @@ class TorBoxAccountImport:
                 f"({count} {'file' if count == 1 else 'episodes'})"
             )
 
+            if replaced is not None:
+                self._notify(replaced)
+
             return item.id
+
+    def _replaced_notice(
+        self,
+        item: Movie | Show,
+        targets: list[Movie | Episode],
+        torrent: dict[str, Any],
+        stopped: bool,
+    ) -> Notice | None:
+        """Notice for a replace (built before the old copy is cleared)."""
+
+        if not targets or not self.settings.notify_replaced:
+            return None
+
+        old = list[str]()
+
+        for target in targets:
+            active = target.active_stream
+            infohash = active.infohash.lower() if active else ""
+            name = next(
+                (
+                    s.raw_title
+                    for s in [*target.streams, *target.blacklisted_streams]
+                    if s.infohash.lower() == infohash
+                ),
+                infohash or "unknown",
+            )
+            if name not in old:
+                old.append(name)
+
+        if len(targets) == 1:
+            title = item_title(targets[0])
+            what = "this file"
+        else:
+            title = f"{item_title(item)} ({len(targets)} episodes)"
+            what = f"{len(targets)} files"
+
+        description = f"A torrent added to the TorBox account replaced {what}."
+        if stopped:
+            description += " Plex playback was stopped for the switch."
+
+        fields = [
+            ("New Copy", str(torrent.get("name") or torrent.get("id"))),
+            ("Old Copy" if len(old) == 1 else "Old Copies", "\n".join(old)),
+        ]
+
+        if len(targets) > 1:
+            numbers = [t.log_string.removeprefix(item.log_string).strip() for t in targets]
+            fields.append(("Episodes", ", ".join(sorted(numbers))))
+
+        from program.settings import settings_manager
+
+        return Notice(
+            event="Replaced From TorBox Account",
+            title=title,
+            description=description,
+            color=GREEN,
+            fields=fields,
+        ).with_item(item, settings_manager.settings.notifications.link_url)
 
     def _item_for(self, session: Session, match: Match) -> Movie | Show | None:
         item = session.get(MediaItem, match.item_id) if match.item_id else None

@@ -480,3 +480,33 @@ def test_plex_sessions_matched_by_mapped_path():
     )
 
     assert found == [playing]  # Windows paths compare case-insensitively
+
+
+def test_replaced_notice_names_old_and_new_copy(importer, monkeypatch):
+    show = make_show()
+    e1, e2 = show.seasons[0].episodes
+    with_file(e1, "b" * 40)
+    with_file(e2, "c" * 40)
+    old = Stream.__mapper__.class_manager.new_instance()
+    old.infohash, old.raw_title = "b" * 40, "Show.S01.720p-OLD"
+    e1.streams.append(old)
+    torrent = pack("Show.S01E01.1080p.mkv", "Show.S01E02.1080p.mkv")
+
+    settings = SimpleNamespace(notify_replaced=False)
+    monkeypatch.setattr(TorBoxAccountImport, "settings", settings)
+
+    assert importer._replaced_notice(show, [e1], torrent, False) is None
+
+    settings.notify_replaced = True
+    assert importer._replaced_notice(show, [], torrent, False) is None
+
+    one = importer._replaced_notice(show, [e1], torrent, True)
+    assert one.title.endswith("S01E01")
+    assert dict(one.fields) == {"New Copy": "Show S01", "Old Copy": "Show.S01.720p-OLD"}
+    assert "stopped" in one.description
+
+    two = importer._replaced_notice(show, [e2, e1], torrent, False)
+    fields = dict(two.fields)
+    assert fields["Old Copies"] == "c" * 40 + "\nShow.S01.720p-OLD"  # no stream: hash
+    assert fields["Episodes"] == "S01E01, S01E02"
+    assert "2 files" in two.description

@@ -107,6 +107,14 @@ class TorBoxImportModel(Observable):
         ),
         description="Message Plex shows when playback is stopped for a replace",
     )
+    notify_replaced: bool = Field(
+        default=False,
+        description=(
+            "With replace_existing: post a notice to the URLs below each time an "
+            "account torrent replaces files Riven already had, with the old and "
+            "new copy."
+        ),
+    )
     interval: int = Field(
         default=120, ge=30, description="Seconds between TorBox account checks"
     )
@@ -114,7 +122,8 @@ class TorBoxImportModel(Observable):
         default_factory=list,
         description=(
             "Apprise URLs (e.g. a Discord webhook) told once when a torrent "
-            "can't be matched to a title"
+            "can't be matched to a title, and of replaced files with "
+            "notify_replaced on"
         ),
     )
 
