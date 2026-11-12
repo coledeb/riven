@@ -39,6 +39,10 @@ from program.utils.notify import PURPLE, Notice, send
 DONE = (States.Completed, States.Symlinked)
 
 
+RETRIES = 3  # tries before giving up on a replace that keeps failing
+RETRY_MINUTES = 10  # wait before try n+1 = n × this
+
+
 def _parse_time(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -149,7 +153,8 @@ class OverseerrReplace:
             if not show:
                 return None, "not in Riven"
 
-            if not season:
+            # Seerr sends season 0 for "all seasons"; an episode with it is a special
+            if not season and not episode:
                 return None, "whole show"
 
             match = next((s for s in show.seasons if s.number == season), None)
@@ -231,7 +236,10 @@ class OverseerrReplace:
             for issue in reversed(issues):  # oldest first
                 key = str(issue["id"])
 
-                if key in handled or _parse_time(issue["createdAt"]) < since:
+                if _parse_time(issue["createdAt"]) < since:
+                    continue
+
+                if key in handled and not self._retry_due(handled[key], now):
                     continue
 
                 if issue["id"] in own or (issue.get("createdBy") or {}).get("id") in skip_users:
@@ -250,6 +258,14 @@ class OverseerrReplace:
                 del replaced[key]
 
             self._save(state)
+
+    @staticmethod
+    def _retry_due(entry: dict[str, Any], now: datetime) -> bool:
+        """True for an issue whose replace failed and is due another try."""
+
+        return entry.get("status") == "error" and now.timestamp() >= entry.get(
+            "retry_at", 0
+        )
 
     def _handle(
         self,
@@ -310,8 +326,30 @@ class OverseerrReplace:
         try:
             label, item = self._replace(item_id, issue["id"])
         except Exception as e:
-            handled[key] = {"status": "error"}
-            logger.warning(f"Overseerr replace: couldn't replace for issue #{key}: {e}")
+            tries = handled.get(key, {}).get("tries", 0) + 1
+
+            if tries < RETRIES:
+                handled[key] = {
+                    "status": "error",
+                    "tries": tries,
+                    "retry_at": now.timestamp() + RETRY_MINUTES * 60 * tries,
+                }
+                logger.warning(
+                    f"Overseerr replace: couldn't replace for issue #{key} "
+                    f"(try {tries}/{RETRIES}, retrying later): {e}"
+                )
+                return
+
+            handled[key] = {"status": "failed", "tries": tries}
+            logger.warning(
+                f"Overseerr replace: giving up on issue #{key} after {tries} tries: {e}"
+            )
+            api.comment_issue(
+                issue["id"],
+                "Riven couldn't start finding another copy (it hit an error "
+                f"{tries} times). Leaving this issue open for the admin.",
+                user,
+            )
             return
 
         if item is None:

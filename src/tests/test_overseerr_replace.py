@@ -191,3 +191,43 @@ def test_issue_closed_meanwhile_is_dropped(service, seerr):
 
     assert seerr.resolved == []
     assert json.loads(service._state_file.read_text())["handled"] == {}
+
+
+def test_replace_error_is_retried_then_given_up(service, seerr, monkeypatch):
+    calls = []
+
+    def boom(item_id, issue_id):
+        calls.append(issue_id)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(service, "_replace", boom)
+    seerr.issues = [issue(20)]
+
+    service._run(NOW + timedelta(minutes=2))  # try 1
+    service._run(NOW + timedelta(minutes=5))  # not due yet
+    assert calls == [20]
+
+    service._run(NOW + timedelta(minutes=13))  # try 2 (due after 10 min)
+    service._run(NOW + timedelta(minutes=34))  # try 3 (due after 20 more) → give up
+    service._run(NOW + timedelta(hours=5))
+    assert calls == [20, 20, 20]
+    assert len(seerr.comments) == 1
+    assert "hit an error 3 times" in seerr.comments[0][1]
+
+
+def test_replace_succeeds_on_retry(service, seerr, monkeypatch):
+    real = service._replace
+    fail = [True]
+
+    def flaky(item_id, issue_id):
+        if fail.pop() if fail else False:
+            raise RuntimeError("blip")
+        return real(item_id, issue_id)
+
+    monkeypatch.setattr(service, "_replace", flaky)
+    seerr.issues = [issue(21)]
+    service._run(NOW + timedelta(minutes=2))
+    service._run(NOW + timedelta(minutes=13))
+
+    assert service.replace_calls == [(77, 21)]
+    assert seerr.comments[0][1].startswith("Finding another copy")

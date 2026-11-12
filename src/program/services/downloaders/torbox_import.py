@@ -486,6 +486,16 @@ class TorBoxAccountImport:
             if not targets and not self._has_gap(item, torrent):
                 return None
 
+            # Check the torrent is usable before stopping anyone's playback
+            item_type = "movie" if isinstance(item, Movie) else "show"
+            container, reason, info = torbox._process_torrent(tid, infohash, item_type)
+
+            if container is None or info is None:
+                logger.debug(
+                    f"TorBox import: can't use '{torrent.get('name')}': {reason}"
+                )
+                return None
+
             vfs = self._program().services.filesystem.riven_vfs
             playing = [t for t in targets if vfs and vfs.is_open(t)]
 
@@ -493,15 +503,6 @@ class TorBoxAccountImport:
                 logger.debug(
                     f"TorBox import: '{torrent.get('name')}' replaces a file that is "
                     "open; trying again on the next check"
-                )
-                return None
-
-            item_type = "movie" if isinstance(item, Movie) else "show"
-            container, reason, info = torbox._process_torrent(tid, infohash, item_type)
-
-            if container is None or info is None:
-                logger.debug(
-                    f"TorBox import: can't use '{torrent.get('name')}': {reason}"
                 )
                 return None
 
