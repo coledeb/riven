@@ -647,3 +647,37 @@ def test_account_refused_later_is_posted(fake, monkeypatch):
 
     assert [n.event for n in sent] == ["TorBox Account Problem"]
     assert dict(sent[0].fields)["TorBox said"] == "TorBox paid plan required"
+
+
+def test_cleanup_leaves_a_torrent_being_linked(downloader, fake, monkeypatch):
+    # An old account torrent reused for a download (or picked up by account
+    # import) isn't linked in the library until that finishes
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    fake.cached[EXISTING] = episode_files()
+    monkeypatch.setattr(downloader, "_torrent_in_use", lambda _id: False)
+
+    downloader.get_instant_availability(EXISTING, "show")
+
+    assert downloader.delete_torrent(existing_id, include_foreign=True, cleanup=True) is False
+    assert existing_id in fake.torrents
+
+    # Once the protection lapses, cleanup may delete it
+    downloader._touched[str(existing_id)] -= torbox.TOUCH_PROTECT_SECONDS + 1
+    assert downloader.delete_torrent(existing_id, include_foreign=True, cleanup=True) is True
+    assert existing_id not in fake.torrents
+
+
+def test_touch_refused_while_cleanup_deletes(downloader, fake, monkeypatch):
+    existing_id = fake.add_existing(EXISTING, episode_files())
+    seen = []
+
+    def in_use(tid):
+        # Mid-delete: an import trying to link it now is turned away
+        seen.append(downloader.touch(tid))
+        return False
+
+    monkeypatch.setattr(downloader, "_torrent_in_use", in_use)
+    assert downloader.delete_torrent(existing_id, include_foreign=True, cleanup=True)
+
+    assert seen == [False]
+    assert downloader.touch(existing_id) is True

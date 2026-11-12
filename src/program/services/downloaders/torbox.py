@@ -61,6 +61,11 @@ LIST_PAGE_SIZE = 1000
 
 # Riven's own torrents, kept across restarts: {torrent id: time added}
 CREATED_FILE = "torbox_created.json"
+# A torrent Riven picked up (added, reused, imported) is linked to items only
+# when that finishes; until then cleanup leaves it alone for this long
+TOUCH_PROTECT_SECONDS = 15 * 60
+# How long add_torrent waits for a cleanup delete of the torrent it wants
+DELETE_WAIT_SECONDS = 15
 
 
 class TorBoxError(Exception):
@@ -221,6 +226,8 @@ class TorBoxDownloader(DownloaderBase):
         self._created = dict[str, str]()
         self._created_file = data_dir_path / CREATED_FILE
         self._unused_since = dict[str, float]()
+        self._touched = dict[str, float]()  # torrent id -> monotonic time
+        self._deleting = set[str]()  # cleanup deletes in flight
         self._load_created()
         self._paused_until = dict[str, float]()
         self._link_bucket = TokenBucket(
@@ -677,10 +684,14 @@ class TorBoxDownloader(DownloaderBase):
 
         if existing:
             torrent_id = str(existing["id"])
-            logger.debug(
-                f"Torrent {infohash} is already on TorBox as {torrent_id}; reusing it"
-            )
-            return torrent_id
+
+            if self.touch(torrent_id) or self._wait_deleted(torrent_id):
+                logger.debug(
+                    f"Torrent {infohash} is already on TorBox as {torrent_id}; reusing it"
+                )
+                return torrent_id
+
+            # Cleanup just deleted it: add it again below
 
         response, body = self._request(
             "POST",
@@ -718,7 +729,53 @@ class TorBoxDownloader(DownloaderBase):
             self._created[torrent_id] = datetime.now(timezone.utc).isoformat()
             self._save_created()
 
+        self.touch(torrent_id)
+
         return torrent_id
+
+    def touch(self, torrent_id: int | str) -> bool:
+        """
+        Mark a torrent as about to be linked, so cleanup leaves it alone.
+
+        Returns False if a cleanup delete of it is in flight right now: the
+        caller mustn't link to it.
+        """
+
+        torrent_id = str(torrent_id)
+        now = time.monotonic()
+
+        with self._lock:
+            if torrent_id in self._deleting:
+                return False
+
+            for tid, at in list(self._touched.items()):
+                if now - at > TOUCH_PROTECT_SECONDS:
+                    del self._touched[tid]
+
+            self._touched[torrent_id] = now
+            return True
+
+    def _wait_deleted(self, torrent_id: str) -> bool:
+        """Wait for a cleanup delete of the torrent; True if it was kept after all."""
+
+        deadline = time.monotonic() + DELETE_WAIT_SECONDS
+
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+
+            if self.touch(torrent_id):
+                return self._find_torrent_id(torrent_id)
+
+        return False
+
+    def _find_torrent_id(self, torrent_id: str) -> bool:
+        """Whether the torrent is still on the account."""
+
+        try:
+            self.get_torrent_info(torrent_id)
+            return True
+        except Exception:
+            return False
 
     def select_files(self, torrent_id: int | str, file_ids: list[int]) -> None:
         """TorBox makes every file of a torrent available; nothing to select."""
@@ -787,16 +844,20 @@ class TorBoxDownloader(DownloaderBase):
         )
 
     def delete_torrent(
-        self, torrent_id: int | str, include_foreign: bool = False
-    ) -> None:
+        self,
+        torrent_id: int | str,
+        include_foreign: bool = False,
+        cleanup: bool = False,
+    ) -> bool:
         """
-        Delete a torrent on TorBox.
+        Delete a torrent on TorBox; True if it was deleted.
 
         With ``only_manage_own_torrents`` on (the default), torrents Riven
         didn't add are left alone: other tools sharing the account
         may still be using them. With it off, or with ``include_foreign``
         (autoclean), those are deleted too. A torrent Riven's library still
-        links to is never deleted.
+        links to is never deleted. ``cleanup`` (autoclean, unused-torrent
+        removal) also leaves a torrent that is being linked (see touch()).
 
         Raises:
             TorBoxError: If the API returns a failing status.
@@ -804,6 +865,27 @@ class TorBoxDownloader(DownloaderBase):
 
         torrent_id = str(torrent_id)
 
+        if not cleanup:
+            return self._delete(torrent_id, include_foreign)
+
+        with self._lock:
+            at = self._touched.get(torrent_id)
+
+            if at is not None and time.monotonic() - at < TOUCH_PROTECT_SECONDS:
+                logger.debug(
+                    f"Leaving TorBox torrent {torrent_id} in place: Riven is linking it"
+                )
+                return False
+
+            self._deleting.add(torrent_id)
+
+        try:
+            return self._delete(torrent_id, include_foreign)
+        finally:
+            with self._lock:
+                self._deleting.discard(torrent_id)
+
+    def _delete(self, torrent_id: str, include_foreign: bool) -> bool:
         with self._lock:
             created = torrent_id in self._created
 
@@ -815,7 +897,7 @@ class TorBoxDownloader(DownloaderBase):
             logger.debug(
                 f"Leaving TorBox torrent {torrent_id} in place: Riven did not create it"
             )
-            return
+            return False
 
         # Also for torrents Riven created: a season pack is tried by several
         # episodes at once, and one episode failing on it must not delete the
@@ -824,7 +906,7 @@ class TorBoxDownloader(DownloaderBase):
             logger.debug(
                 f"Leaving TorBox torrent {torrent_id} in place: Riven's library still uses it"
             )
-            return
+            return False
 
         response, body = self._request(
             "POST",
@@ -841,6 +923,9 @@ class TorBoxDownloader(DownloaderBase):
             if self._created.pop(torrent_id, None) is not None:
                 self._save_created()
             self._unused_since.pop(torrent_id, None)
+            self._touched.pop(torrent_id, None)
+
+        return True
 
     def remove_unused(self) -> None:
         """
@@ -872,8 +957,8 @@ class TorBoxDownloader(DownloaderBase):
 
         for tid in self._due_unused(on_account, used):
             try:
-                self.delete_torrent(tid)
-                logger.info(f"Removed unused TorBox torrent {tid}")
+                if self.delete_torrent(tid, cleanup=True):
+                    logger.info(f"Removed unused TorBox torrent {tid}")
             except Exception as e:
                 logger.debug(f"Failed to remove unused TorBox torrent {tid}: {e}")
 

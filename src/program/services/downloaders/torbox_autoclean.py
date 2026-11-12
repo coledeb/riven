@@ -195,15 +195,12 @@ class AutoClean:
 
         for t in listed:
             try:
-                self.torbox.delete_torrent(t["id"], include_foreign=True)
-                deleted.append(t)
+                if self.torbox.delete_torrent(t["id"], include_foreign=True, cleanup=True):
+                    deleted.append(t)
             except Exception as e:
                 failed += 1
                 logger.debug(f"TorBox autoclean: failed to delete {t['id']}: {e}")
 
-        # delete_torrent quietly keeps a torrent that turned out to be in use
-        in_use = self.torbox._used_ids()
-        deleted = [t for t in deleted if str(t["id"]) not in in_use]
         gb = sum(t.get("size") or 0 for t in deleted) / 1e9
 
         logger.info(

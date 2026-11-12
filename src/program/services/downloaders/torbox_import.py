@@ -486,6 +486,10 @@ class TorBoxAccountImport:
             if not targets and not self._has_gap(item, torrent):
                 return None
 
+            # Keep cleanup off it while linking; skip it while a delete is in flight
+            if not torbox.touch(tid):
+                return None
+
             # Check the torrent is usable before stopping anyone's playback
             item_type = "movie" if isinstance(item, Movie) else "show"
             container, reason, info = torbox._process_torrent(tid, infohash, item_type)

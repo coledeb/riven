@@ -46,9 +46,12 @@ class FakeTorBox:
     def _used_ids(self):
         return set(self.used)
 
-    def delete_torrent(self, tid, include_foreign=False):
-        assert include_foreign
+    def delete_torrent(self, tid, include_foreign=False, cleanup=False):
+        assert include_foreign and cleanup
+        if str(tid) in self.used:
+            return False
         self.deleted.append(str(tid))
+        return True
 
 
 @pytest.fixture
