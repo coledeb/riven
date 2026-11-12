@@ -54,6 +54,10 @@ PROXY_REQUIRED_PROVIDERS = {"alldebrid"}
 # reader retrying over and over backs off too) and resets on a good answer.
 RATE_LIMIT_BACKOFFS = [2.0, 4.0, 8.0, 16.0, 30.0]
 RATE_LIMIT_MAX_WAIT = 30.0
+# Connections keep trying a host one at a time this long after its last 429,
+# even once one got a good answer: that answer may come from a request sent
+# before the 429, and the CDN is still limiting new ones
+RATE_LIMIT_PROBATION_SECONDS = 30.0
 # Waits before retrying a failed link refresh (provider API hiccup); stop
 # retrying once this much time has passed, since the reader is waiting
 REFRESH_RETRY_BACKOFFS = [2.0, 4.0]
@@ -93,6 +97,8 @@ def _error_summary(e: BaseException) -> str:
 _host_paused_until: dict[str, float] = {}
 # 429s in a row from each host
 _host_429_streak: dict[str, int] = {}
+# trio time of each host's last 429
+_host_last_429: dict[str, float] = {}
 # While a host is rate limiting, one connection at a time tries it (see _enter_host)
 _host_gates: dict[str, trio.Lock] = {}
 
@@ -160,8 +166,27 @@ def _next_429_streak(host: str) -> int:
         streak += 1
 
     _host_429_streak[host] = streak
+    _host_last_429[host] = trio.current_time()
 
     return streak
+
+
+def _rate_limited(host: str) -> bool:
+    """Whether this host is rate limiting us, or did so very recently."""
+
+    if host in _host_429_streak:
+        return True
+
+    last = _host_last_429.get(host)
+
+    if last is None:
+        return False
+
+    if trio.current_time() - last < RATE_LIMIT_PROBATION_SECONDS:
+        return True
+
+    del _host_last_429[host]
+    return False
 
 
 async def _enter_host(host: str) -> trio.Lock | None:
@@ -174,7 +199,7 @@ async def _enter_host(host: str) -> trio.Lock | None:
 
     await _wait_for_host(host)
 
-    if host not in _host_429_streak:
+    if not _rate_limited(host):
         return None
 
     gate = _host_gates.setdefault(host, trio.Lock())

@@ -21,10 +21,12 @@ def clear_pauses():
     media_stream._host_paused_until.clear()
     media_stream._host_429_streak.clear()
     media_stream._host_gates.clear()
+    media_stream._host_last_429.clear()
     yield
     media_stream._host_paused_until.clear()
     media_stream._host_429_streak.clear()
     media_stream._host_gates.clear()
+    media_stream._host_last_429.clear()
 
 
 def make_stream(handler):
@@ -253,3 +255,43 @@ def test_gate_is_released_when_a_waiting_read_gives_up():
             return response.status_code
 
     assert run(main) == 206
+
+
+def test_a_good_answer_in_flight_doesnt_reopen_the_host_at_once():
+    # 11-11 00:41 (log): a 206 already in flight answered just after a 429 and
+    # cleared rate-limit mode, so eight new reads hit the CDN together: eight 429s
+    in_flight = peak = 0
+    answers = []
+
+    class Cdn(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, _request):
+            nonlocal in_flight, peak
+            n = len(answers)
+            answers.append(None)
+            in_flight += 1
+            peak = max(peak, in_flight) if n >= 2 else peak  # count the burst only
+            await trio.sleep(1 if n else 0.5)
+            in_flight -= 1
+            # first: 429 at 0.5 s; second (in flight): 206 at 1 s; the rest: 429
+            # until one at a time has gone by, then fine
+            status = 429 if n == 0 or 2 <= n <= 3 else 206
+            return httpx.Response(status, content=b"x" * 10)
+
+    streams = [make_stream(lambda _request: None) for _ in range(10)]
+    for stream in streams:
+        stream.async_client = httpx.AsyncClient(transport=Cdn())
+
+    async def connect(stream, delay):
+        await trio.sleep(delay)
+        async with stream.establish_connection(0, end=9):
+            pass
+
+    async def main():
+        async with trio.open_nursery() as nursery:
+            nursery.start_soon(connect, streams[0], 0)
+            nursery.start_soon(connect, streams[1], 0)
+            for stream in streams[2:]:  # arrive after the 206
+                nursery.start_soon(connect, stream, 3)
+
+    run(main)
+    assert peak == 1
