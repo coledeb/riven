@@ -160,14 +160,48 @@ def test_expiry_ignores_a_newer_hold(vfs):
     item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
     vfs.add(item)
     vfs.hold(item)
+    first = vfs._held[1]
     item.media_entry = FakeEntry("b.mkv", 200, MOVIE)
     vfs.add(item)
     vfs.hold(item)  # the new source died too
 
-    vfs._expire_hold(1, "a.mkv")  # timer from the first hold
+    vfs._expire_hold(1, first)  # timer from the first hold
 
     assert _file(vfs, MOVIE) is not None
     assert vfs._is_held("b.mkv")
+
+
+def test_expiry_ignores_a_newer_hold_of_the_same_file(vfs):
+    item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
+    vfs.add(item)
+    vfs.hold(item)
+    first = vfs._held[1]
+    item.media_entry = FakeEntry("a.mkv", 100, MOVIE)  # same torrent re-added
+    vfs.add(item)
+    vfs.hold(item)
+
+    vfs._expire_hold(1, first)
+
+    assert _file(vfs, MOVIE) is not None
+    assert vfs._is_held("a.mkv")
+
+
+def test_expiry_keeps_a_file_added_while_it_runs(vfs):
+    item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
+    vfs.add(item)
+    vfs.hold(item)
+    held = vfs._held[1]
+
+    # The new source lands between the expiry dropping the hold and removing
+    # the paths (it stops Plex playback there, a network call)
+    def stop_then_add(paths, message, wait=0):
+        item.media_entry = FakeEntry("b.mkv", 200, MOVIE)
+        vfs.add(item)
+
+    vfs._stop_plex_playback = stop_then_add
+    vfs._expire_hold(1, held)
+
+    assert _file(vfs, MOVIE).original_filename == "b.mkv"
 
 
 def test_failed_read_waits_for_swap_and_retries(vfs):

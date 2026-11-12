@@ -617,6 +617,20 @@ class RivenVFS(pyfuse3.Operations):
         if held:
             self._forget_hold(held[1])
             self._swap_held_nodes(entry, held[0])
+        else:
+            # Registering keeps a node already at the path as is. One still on
+            # another file (a hold that expired as this source landed) would
+            # then serve the old file, or be removed by that expiry: point it here.
+            with self._tree_lock:
+                stale = [
+                    path
+                    for path in map(self._normalize_path, entry.get_all_vfs_paths())
+                    if isinstance(node := self._get_node_by_path(path), VFSFile)
+                    and node.original_filename != entry.original_filename
+                ]
+
+            if stale:
+                self._swap_held_nodes(entry, stale)
 
         # Register the MediaEntry (video file)
         video_paths = self._register_filesystem_entry(entry)
@@ -742,13 +756,19 @@ class RivenVFS(pyfuse3.Operations):
             self.remove(item)
             return
 
-        self._held[item.id] = (paths, entry.original_filename)
+        held = (paths, entry.original_filename)
+
+        with self._tree_lock:
+            self._held[item.id] = held
+
         entry.available_in_vfs = False
 
+        # The timer gets this exact tuple: a later hold of the item makes a new
+        # one, so an old timer can't expire it
         timer = threading.Timer(
             self._hold_timeout,
             self._expire_hold,
-            args=(item.id, entry.original_filename),
+            args=(item.id, held),
         )
         timer.daemon = True
         timer.start()
@@ -785,22 +805,24 @@ class RivenVFS(pyfuse3.Operations):
             handle["inode"] in inodes for handle in list(self._file_handles.values())
         )
 
-    def _expire_hold(self, item_id: int, original_filename: str) -> None:
+    def _expire_hold(self, item_id: int, held: tuple[list[str], str]) -> None:
         """Remove a held file whose item found no new source in time."""
 
-        with self._tree_lock:
-            held = self._held.get(item_id)
+        paths, original_filename = held
 
-            if not held or held[1] != original_filename:
+        with self._tree_lock:
+            if self._held.get(item_id) is not held:
                 return
 
             del self._held[item_id]
 
         self._forget_hold(original_filename)
-        self._stop_plex_playback(held[0], SOURCE_LOST_STOP_MESSAGE)
+        self._stop_plex_playback(paths, SOURCE_LOST_STOP_MESSAGE)
 
-        for path in held[0]:
-            self._unregister_clean_path(path)
+        # A new source added since (after the hold was dropped above) may
+        # already use these paths: only remove nodes still on the old file
+        for path in paths:
+            self._unregister_clean_path(path, only_if=original_filename)
 
         logger.warning(
             f"No new source for item {item_id} within {self._hold_timeout}s; "
@@ -1594,12 +1616,13 @@ class RivenVFS(pyfuse3.Operations):
 
         return unregistered_paths
 
-    def _unregister_clean_path(self, path: str) -> bool:
+    def _unregister_clean_path(self, path: str, only_if: str | None = None) -> bool:
         """
         Unregister a VFS path and prune empty parent directories.
 
         Args:
             path: VFS path to unregister
+            only_if: only if the node there is a file with this original_filename
 
         Returns:
             True if successfully unregistered
@@ -1611,6 +1634,11 @@ class RivenVFS(pyfuse3.Operations):
             node = self._get_node_by_path(normalized_path)
 
             if not node:
+                return False
+
+            if only_if is not None and (
+                not isinstance(node, VFSFile) or node.original_filename != only_if
+            ):
                 return False
 
             # Remove the file node
