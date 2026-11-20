@@ -63,7 +63,21 @@ class Gap:
 
 
 def _episode_list(season: int, episodes: list[int]) -> str:
-    return ", ".join(f"S{season:02d}E{e:02d}" for e in sorted(episodes))
+    """Episodes as text, with runs collapsed: S18E01-S18E14, S18E17."""
+
+    runs: list[list[int]] = []
+    for e in sorted(set(episodes)):
+        if runs and e == runs[-1][1] + 1:
+            runs[-1][1] = e
+        else:
+            runs.append([e, e])
+
+    def code(e: int) -> str:
+        return f"S{season:02d}E{e:02d}"
+
+    return ", ".join(
+        code(a) if a == b else f"{code(a)}-{code(b)}" for a, b in runs
+    )
 
 
 class OverseerrIssues:

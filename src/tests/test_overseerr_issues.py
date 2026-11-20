@@ -6,7 +6,11 @@ import pytest
 from kink import di
 
 from program.apis.overseerr_api import OverseerrAPI
-from program.services.content.overseerr_issues import Gap, OverseerrIssues
+from program.services.content.overseerr_issues import (
+    Gap,
+    OverseerrIssues,
+    _episode_list,
+)
 
 NOW = datetime(2026, 10, 18, 12, 0)
 
@@ -150,7 +154,7 @@ def test_whole_season_issue_has_no_episode(issues, seerr):
     issues._run(NOW + timedelta(minutes=31))
     _, _, s, e, _, message = seerr.created[0]
     assert (s, e) == (4, 0)
-    assert "S04E01, S04E02, S04E03 have" in message
+    assert "S04E01-S04E03 have" in message
 
 
 def test_not_in_overseerr_is_skipped(issues, seerr):
@@ -182,3 +186,13 @@ def test_removed_item_closes_with_note(issues, seerr):
     issues._run(NOW + timedelta(minutes=40))
     assert seerr.comments[-1][1] == "Removed from Riven, closing."
     assert len(seerr.resolved) == 1
+
+
+def test_episode_list_collapses_runs():
+    assert _episode_list(18, list(range(1, 61))) == "S18E01-S18E60"
+    assert (
+        _episode_list(18, [*range(1, 15), 17, *range(20, 59)])
+        == "S18E01-S18E14, S18E17, S18E20-S18E58"
+    )
+    assert _episode_list(4, [3]) == "S04E03"
+    assert _episode_list(4, [5, 1, 2]) == "S04E01-S04E02, S04E05"
