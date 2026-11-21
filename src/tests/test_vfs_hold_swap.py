@@ -437,3 +437,25 @@ def test_a_plex_that_hangs_delays_one_swap_then_is_skipped(monkeypatch):
 
     assert time.monotonic() - started < 1
     assert asked == [1]
+
+
+def test_open_never_waits_for_a_held_file(vfs, monkeypatch):
+    # Samba handles opens synchronously for all of Plex: an open that waits
+    # stalls every other file Plex is playing. Reads do the waiting instead.
+    item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
+    vfs.add(item)
+    vfs.hold(item)
+    inode = _file(vfs, MOVIE).inode
+    vfs._next_fh = pyfuse3.FileHandleT(1)
+
+    async def no_wait(*_a, **_k):
+        raise AssertionError("open waited for the swap")
+
+    monkeypatch.setattr(vfs, "_await_swap", no_wait)
+
+    async def main():
+        with trio.fail_after(1):
+            return await vfs.open(inode, 0, None)
+
+    info = trio.run(main)
+    assert vfs._file_handles[info.fh]["inode"] == inode

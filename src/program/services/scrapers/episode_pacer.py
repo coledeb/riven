@@ -2,10 +2,10 @@
 
 When that fallback first runs (or after a library import), every stuck season
 sends all of its aired episodes to the scraper at once. Hundreds of scrapes,
-downloads and new files for Plex to analyse then compete with whatever is
-playing. The pacer lets a few episodes through at a time, caps the total per
-window, holds back while the VFS is streaming, and asks for the season to be
-tried again later for the rest.
+downloads and new files for Plex to analyse arrive at once (and Torrentio
+answers with 429s). The pacer lets a few episodes through at a time, caps the
+total per window, and asks for the season to be tried again later for the
+rest.
 """
 
 from __future__ import annotations
@@ -17,10 +17,9 @@ from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 
 WINDOW_SECONDS = 10 * 60
-MAX_PER_WINDOW = 20  # episodes started per window, across all seasons
-BATCH_PER_SEASON = 5  # episodes one season may start per pass
-RETRY_SECONDS = 2 * 60  # wait before a season sends its next batch
-PLAYBACK_RETRY_SECONDS = 5 * 60  # wait while something is streaming
+MAX_PER_WINDOW = 60  # episodes started per window, across all seasons
+BATCH_PER_SEASON = 10  # episodes one season may start per pass
+RETRY_SECONDS = 60  # wait before a season sends its next batch
 
 
 @dataclass(frozen=True)
@@ -44,7 +43,6 @@ class EpisodeFallbackPacer:
     def take(
         self,
         episodes: list,
-        playback_active: bool,
         key: Callable[[object], Hashable] = id,
     ) -> Grant:
         """Pick which of a season's due episodes may be scraped now."""
@@ -64,9 +62,6 @@ class EpisodeFallbackPacer:
 
             if not wanted:
                 return Grant([], None)
-
-            if playback_active:
-                return Grant([], PLAYBACK_RETRY_SECONDS)
 
             room = MAX_PER_WINDOW - len(self._started)
             allowed = wanted[: max(0, min(BATCH_PER_SEASON, room))]

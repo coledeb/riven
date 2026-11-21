@@ -234,7 +234,6 @@ def _pace(season: Season, due: list[MediaItem]) -> list[MediaItem]:
 
     grant = pacer.take(
         due,
-        playback_active=_playback_active(program),
         key=lambda e: e.id if e.id is not None else id(e),
     )
 
@@ -242,15 +241,6 @@ def _pace(season: Season, due: list[MediaItem]) -> list[MediaItem]:
         _retry_season_later(program, season, grant.retry_in)
 
     return grant.allowed
-
-
-def _playback_active(program: Any) -> bool:
-    """Whether the VFS is serving any file (Plex playing or analysing)."""
-
-    filesystem = getattr(program.services, "filesystem", None)
-    vfs = filesystem and getattr(filesystem, "riven_vfs", None)
-
-    return bool(vfs and vfs.has_active_streams())
 
 
 def _retry_season_later(program: Any, season: Season, delay: float) -> None:

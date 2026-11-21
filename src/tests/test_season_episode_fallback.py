@@ -22,14 +22,6 @@ class FakeScraping:
         return id(item) not in self.blocked
 
 
-class FakeVFS:
-    def __init__(self):
-        self.streaming = False
-
-    def has_active_streams(self):
-        return self.streaming
-
-
 class FakeEM:
     def __init__(self):
         self.queued = []
@@ -47,7 +39,6 @@ def services():
         scraping=FakeScraping(),
         indexer=object(),
         downloader=object(),
-        filesystem=SimpleNamespace(riven_vfs=FakeVFS()),
     )
     previous = di[Program] if Program in di else None
     di[Program] = SimpleNamespace(services=services, em=FakeEM())
@@ -129,7 +120,7 @@ def test_partial_show_retry_reaches_failed_season_episodes(services):
     assert result.related_media_items == show.seasons[1].episodes
 
 
-def make_long_season(count=12):
+def make_long_season(count=25):
     show = Show({"title": "Long Show"})
     season = Season({"number": 1})
     season.parent = show
@@ -157,29 +148,19 @@ def test_fallback_sends_a_batch_and_queues_the_season_for_the_rest(services):
 
     result = process_event("RetryLibrary", season)
 
-    assert result.related_media_items == season.episodes[:5]
+    B = episode_pacer.BATCH_PER_SEASON
+    assert result.related_media_items == season.episodes[:B]
     queued = di[Program].em.queued
     assert [e.item_id for e in queued] == [77]
-    assert queued[0].run_at > datetime.now() + timedelta(seconds=100)
+    assert queued[0].run_at > datetime.now() + timedelta(seconds=50)
 
     # The delayed pass sends the next batch, not the episodes already sent
     result = process_event("StateTransition", season)
-    assert result.related_media_items == season.episodes[5:10]
+    assert result.related_media_items == season.episodes[B : 2 * B]
     assert len(di[Program].em.queued) == 1  # already queued, not doubled
 
 
-def test_fallback_waits_while_something_is_streaming(services):
-    services.filesystem.riven_vfs.streaming = True
-    season = make_long_season()
-
-    result = process_event("RetryLibrary", season)
-
-    assert result.related_media_items == []
-    assert [e.item_id for e in di[Program].em.queued] == [77]
-
-
 def test_manual_scrape_is_not_paced(services):
-    services.filesystem.riven_vfs.streaming = True
     season = make_long_season()
 
     result = process_event("RetryLibrary", season, overrides={})
@@ -194,7 +175,8 @@ def test_partly_done_failed_season_is_paced_too(services):
 
     result = process_event("RetryLibrary", season)
 
-    assert result.related_media_items == season.episodes[1:6]
+    B = episode_pacer.BATCH_PER_SEASON
+    assert result.related_media_items == season.episodes[1 : B + 1]
     assert [e.item_id for e in di[Program].em.queued] == [77]
 
 
@@ -202,14 +184,15 @@ def test_pacer_caps_episodes_per_window_across_seasons():
     now = [0.0]
     pacer = EpisodeFallbackPacer(clock=lambda: now[0])
     sent = 0
-    for season in range(10):
+    for season in range(20):
         grant = pacer.take(
-            [(season, ep) for ep in range(5)], playback_active=False, key=lambda e: e
+            [(season, ep) for ep in range(episode_pacer.BATCH_PER_SEASON)],
+            key=lambda e: e,
         )
         sent += len(grant.allowed)
     assert sent == episode_pacer.MAX_PER_WINDOW
     assert grant.retry_in > episode_pacer.RETRY_SECONDS
 
     now[0] += episode_pacer.WINDOW_SECONDS
-    grant = pacer.take([(99, 0)], playback_active=False, key=lambda e: e)
+    grant = pacer.take([(99, 0)], key=lambda e: e)
     assert grant.allowed == [(99, 0)] and grant.retry_in is None

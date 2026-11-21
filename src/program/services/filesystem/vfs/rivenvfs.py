@@ -78,7 +78,6 @@ from program.services.streaming.exceptions import (
     DebridServiceLinkUnavailable,
     MediaStreamKilledException,
 )
-from program.utils.debrid_cdn_url import DebridCDNUrl
 from program.db.db import db_session
 
 from ...streaming import (
@@ -828,11 +827,6 @@ class RivenVFS(pyfuse3.Operations):
             f"No new source for item {item_id} within {self._hold_timeout}s; "
             f"removed {len(held[0])} held file(s) from the VFS"
         )
-
-    def has_active_streams(self) -> bool:
-        """Whether any file is being read right now (playback or a Plex scan)."""
-
-        return bool(self._active_streams)
 
     def playback_stopped(self, original_filename: str) -> None:
         """The caller stopped this file's playback before re-sourcing it.
@@ -2097,37 +2091,12 @@ class RivenVFS(pyfuse3.Operations):
                 path = node.path
                 entry_type = node.entry_type
 
-            # Only validate the CDN URL for media entries; subtitles are read directly from the database
-            if entry_type == "media":
-                original_filename = node.original_filename
-
-                if self._is_held(original_filename):
-                    # Being re-sourced after a dead link; wait for the new file
-                    await self._await_swap(inode, original_filename)
-
-                    return await self.open(inode, flags, ctx)
-
-                dead = False
-
-                try:
-                    logger.trace(f"Validating CDN URL for {node.path}...")
-
-                    DebridCDNUrl.from_filename(original_filename).validate()
-                except DebridServiceLinkUnavailable:
-                    dead = True
-
-                # A dead link resets the item with its node held (see hold()),
-                # either via the exception or inside validate()'s refresh, and
-                # add() swaps the node in place once a new source is found.
-                if dead or self._is_held(original_filename):
-                    logger.warning(
-                        f"Dead link for {node.path}; waiting for a working one..."
-                    )
-
-                    await self._await_swap(inode, original_filename)
-
-                    return await self.open(inode, flags, ctx)
-
+            # No link check or waiting here: open returns at once. Samba serves
+            # all of Plex's requests from one process and handles opens
+            # synchronously, so an open that waits (a dead link being
+            # re-sourced) stalls every other file Plex is playing. Reads run
+            # in Samba's async pool, and the read path already refreshes a
+            # dead link and waits for the new file (_read_after_swap).
             logger.trace(f"open: path={path} inode={inode} fh_pending flags={flags}")
 
             # Only allow read access
