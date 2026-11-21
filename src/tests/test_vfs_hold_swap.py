@@ -208,7 +208,7 @@ def test_failed_read_waits_for_swap_and_retries(vfs):
     item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
     vfs.add(item)
     inode = _file(vfs, MOVIE).inode
-    vfs._file_handles = {5: {"inode": inode}}
+    vfs._file_handles = {5: {"inode": inode, "read": "a.mkv"}}  # playing
     vfs._active_streams = {}
     vfs._active_streams_lock = trio.Lock()
 
@@ -459,3 +459,20 @@ def test_open_never_waits_for_a_held_file(vfs, monkeypatch):
 
     info = trio.run(main)
     assert vfs._file_handles[info.fh]["inode"] == inode
+
+
+def test_a_handle_that_never_got_data_fails_at_once_on_a_held_file(vfs):
+    # A Plex scan retries a failing read for minutes (maybe holding its
+    # database); waiting 30 s on each try blocks everything else in Plex.
+    item = FakeItem(1, FakeEntry("a.mkv", 100, MOVIE))
+    vfs.add(item)
+    vfs.hold(item)
+    inode = _file(vfs, MOVIE).inode
+    vfs._file_handles = {7: {"inode": inode}}
+
+    async def main():
+        with trio.fail_after(1):
+            await vfs.read(7, 0, 3)
+
+    with pytest.raises(pyfuse3.FUSEError):
+        trio.run(main)

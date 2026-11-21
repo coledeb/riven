@@ -84,3 +84,19 @@ def test_metadata_shared_within_call_but_refetched_next_call():
     fetch.return_value = media_item(NS(id=1, file="D:\\changed.mkv"))
     assert playing_sessions([session], [PATH], MAPPINGS, fetch_item=fetch) == []
     assert fetch.call_count == 2
+
+
+def test_lookup_queries_sessions_and_metadata_once_for_many_files():
+    session = media_item(NS(id="1014", file=None), ratingKey="798")
+    sessions = Mock(return_value=[session])
+    fetch = Mock(return_value=media_item(NS(id=1014, file=UNC)))
+    updater = PlexUpdater.__new__(PlexUpdater)
+    updater.api = NS(plex_server=NS(sessions=sessions, fetchItem=fetch))
+    updater.settings = NS(path_mappings=MAPPINGS)
+
+    lookup = updater.playing_lookup()
+    results = [lookup([PATH]) for _ in range(40)] + [lookup(["/other.mkv"])]
+
+    assert results[0] == [session] and results[-1] == []
+    sessions.assert_called_once()
+    fetch.assert_called_once_with("798")

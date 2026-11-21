@@ -282,8 +282,12 @@ class SlowStreamMonitor:
     ) -> list[SlowFile]:
         slow = list[SlowFile]()
 
+        # One sessions query per check, not one per streamed file
+        lookup = getattr(plex, "playing_lookup", None)
+        sessions_playing = lookup() if lookup else plex.sessions_playing
+
         for key, stats in files.items():
-            sessions = plex.sessions_playing([self._library_path(stats.path)])
+            sessions = sessions_playing([self._library_path(stats.path)])
 
             if not sessions:
                 continue

@@ -2379,7 +2379,19 @@ class RivenVFS(pyfuse3.Operations):
         off: int,
         size: int,
     ) -> bytes:
-        """Wait for a held file to be swapped, drop the old stream, read again."""
+        """Wait for a held file to be swapped, drop the old stream, read again.
+
+        Only a handle that has already been served (playback) waits. A handle
+        that never got data (a scan, or play pressed on a dead file) fails at
+        once: Plex retries a failing read for minutes, possibly while holding
+        its database, and the wait would block everything else in Plex.
+        """
+
+        handle_info = self._file_handles.get(fh) or {}
+
+        if "read" not in handle_info:
+            logger.debug(f"No source yet for {path} [fh: {fh}]; failing the read")
+            raise pyfuse3.FUSEError(errno.EIO)
 
         logger.warning(f"Waiting for a new source for {path} [fh: {fh}]")
 

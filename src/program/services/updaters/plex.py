@@ -250,6 +250,35 @@ class PlexUpdater(BaseUpdater):
             fetch_item=self.api.plex_server.fetchItem,
         )
 
+    def playing_lookup(self):
+        """``sessions_playing`` for many lookups from one sessions query.
+
+        Checking every streamed file with its own query (and its own metadata
+        fetch for a transcoded session) sent Plex several requests a second.
+        """
+
+        if not self.api or not self.api.plex_server:
+            return lambda paths: []
+
+        server = self.api.plex_server
+        sessions = server.sessions()
+        fetched: dict = {}
+
+        def fetch_item(rating_key):
+            key = str(rating_key)
+            if key not in fetched:
+                try:
+                    fetched[key] = server.fetchItem(rating_key)
+                except Exception as exc:
+                    fetched[key] = exc
+            if isinstance(fetched[key], Exception):
+                raise fetched[key]
+            return fetched[key]
+
+        return lambda paths: playing_sessions(
+            sessions, paths, self.settings.path_mappings, fetch_item=fetch_item
+        )
+
 
 def playing_sessions(
     sessions, paths: list[str], mappings: dict[str, str], *, fetch_item=None
