@@ -109,25 +109,27 @@ def process_event(
                 or services.scraping.should_submit(existing_item)
             )
         ):
-            items_to_submit = [existing_item]
+            items_to_submit = _scrape_targets(existing_item, overrides)
         elif isinstance(existing_item, Show):
             # Decompose Show → Seasons (each season scrapes for packs)
-            items_to_submit = [
-                s
-                for s in existing_item.seasons
-                if s.last_state
-                in [States.Indexed, States.PartiallyCompleted, States.Unknown]
-                and (
+            for s in existing_item.seasons:
+                if s.last_state in [
+                    States.Indexed,
+                    States.PartiallyCompleted,
+                    States.Unknown,
+                ] and (
                     overrides is not None
+                    or _pack_search_failed(s)
                     or services.scraping.should_submit(s)
-                )
-            ]
+                ):
+                    items_to_submit += _scrape_targets(s, overrides)
         elif isinstance(existing_item, Season):
-            # Keep the Season as a unit — the scraper finds both season packs
-            # and individual episodes.  Decomposing to per-episode scraping
-            # here would prevent season-pack matching.
-            if services.scraping.should_submit(existing_item):
-                items_to_submit = [existing_item]
+            # Keep the Season as a unit while season packs are still being
+            # tried; once a pack search has found nothing, scrape its episodes.
+            if _pack_search_failed(existing_item) or services.scraping.should_submit(
+                existing_item
+            ):
+                items_to_submit = _scrape_targets(existing_item, overrides)
 
     elif existing_item and existing_item.last_state == States.Scraped:
         next_service = services.downloader
@@ -163,3 +165,38 @@ def process_event(
         related_media_items=items_to_submit,
         overrides=overrides,
     )
+
+
+def _pack_search_failed(item: MediaItem) -> bool:
+    """A season whose pack search has come back with no new streams."""
+
+    return isinstance(item, Season) and (item.failed_attempts or 0) > 0
+
+
+def _scrape_targets(
+    item: MediaItem, overrides: dict[str, Any] | None
+) -> list[MediaItem]:
+    """What to scrape for an item.
+
+    A season scrape only accepts complete season packs. When none was found,
+    scrape the aired episodes one by one instead: an episode scrape still
+    accepts packs, and also single-episode releases (shows that are only
+    released per episode would otherwise never be found).
+    """
+
+    if not _pack_search_failed(item):
+        return [item]
+
+    from program.program import Program
+
+    scraping = di[Program].services.scraping
+    season = item
+    assert isinstance(season, Season)
+
+    return [
+        e
+        for e in season.episodes
+        if e.last_state in [States.Indexed, States.Unknown]
+        and e.is_released
+        and (overrides is not None or scraping.should_submit(e))
+    ]
