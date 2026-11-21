@@ -9,6 +9,8 @@ from kink import di
 from program.media.item import Episode, Season, Show
 from program.media.state import States
 from program.program import Program
+from program.services.scrapers import episode_pacer
+from program.services.scrapers.episode_pacer import EpisodeFallbackPacer
 from program.state_transition import process_event
 
 
@@ -20,14 +22,38 @@ class FakeScraping:
         return id(item) not in self.blocked
 
 
+class FakeVFS:
+    def __init__(self):
+        self.streaming = False
+
+    def has_active_streams(self):
+        return self.streaming
+
+
+class FakeEM:
+    def __init__(self):
+        self.queued = []
+
+    def _id_in_queue(self, item_id):
+        return any(e.item_id == item_id for e in self.queued)
+
+    def add_event_to_queue(self, event, log_message=True):
+        self.queued.append(event)
+
+
 @pytest.fixture
 def services():
     services = SimpleNamespace(
-        scraping=FakeScraping(), indexer=object(), downloader=object()
+        scraping=FakeScraping(),
+        indexer=object(),
+        downloader=object(),
+        filesystem=SimpleNamespace(riven_vfs=FakeVFS()),
     )
     previous = di[Program] if Program in di else None
-    di[Program] = SimpleNamespace(services=services)
+    di[Program] = SimpleNamespace(services=services, em=FakeEM())
+    episode_pacer.pacer.reset()
     yield services
+    episode_pacer.pacer.reset()
     if previous is not None:
         di[Program] = previous
 
@@ -101,3 +127,89 @@ def test_partial_show_retry_reaches_failed_season_episodes(services):
     result = process_event("RetryLibrary", show)
 
     assert result.related_media_items == show.seasons[1].episodes
+
+
+def make_long_season(count=12):
+    show = Show({"title": "Long Show"})
+    season = Season({"number": 1})
+    season.parent = show
+    season.id = 77
+    episodes = []
+    for ep in range(1, count + 1):
+        episode = Episode(
+            {"number": ep, "title": f"E{ep}", "aired_at": datetime.now() - timedelta(days=100 - ep)}
+        )
+        episode.parent = season
+        episode.id = 1000 + ep
+        episodes.append(episode)
+    season.episodes = episodes
+    show.seasons = [season]
+    season.scraped_at = datetime.now()
+    season.failed_attempts = 1
+    for episode in season.episodes:
+        episode.store_state()
+    season.store_state()
+    return season
+
+
+def test_fallback_sends_a_batch_and_queues_the_season_for_the_rest(services):
+    season = make_long_season()
+
+    result = process_event("RetryLibrary", season)
+
+    assert result.related_media_items == season.episodes[:5]
+    queued = di[Program].em.queued
+    assert [e.item_id for e in queued] == [77]
+    assert queued[0].run_at > datetime.now() + timedelta(seconds=100)
+
+    # The delayed pass sends the next batch, not the episodes already sent
+    result = process_event("StateTransition", season)
+    assert result.related_media_items == season.episodes[5:10]
+    assert len(di[Program].em.queued) == 1  # already queued, not doubled
+
+
+def test_fallback_waits_while_something_is_streaming(services):
+    services.filesystem.riven_vfs.streaming = True
+    season = make_long_season()
+
+    result = process_event("RetryLibrary", season)
+
+    assert result.related_media_items == []
+    assert [e.item_id for e in di[Program].em.queued] == [77]
+
+
+def test_manual_scrape_is_not_paced(services):
+    services.filesystem.riven_vfs.streaming = True
+    season = make_long_season()
+
+    result = process_event("RetryLibrary", season, overrides={})
+
+    assert result.related_media_items == season.episodes
+
+
+def test_partly_done_failed_season_is_paced_too(services):
+    season = make_long_season()
+    season.episodes[0].store_state(States.Completed)
+    season.last_state = States.PartiallyCompleted  # as Riven stores it
+
+    result = process_event("RetryLibrary", season)
+
+    assert result.related_media_items == season.episodes[1:6]
+    assert [e.item_id for e in di[Program].em.queued] == [77]
+
+
+def test_pacer_caps_episodes_per_window_across_seasons():
+    now = [0.0]
+    pacer = EpisodeFallbackPacer(clock=lambda: now[0])
+    sent = 0
+    for season in range(10):
+        grant = pacer.take(
+            [(season, ep) for ep in range(5)], playback_active=False, key=lambda e: e
+        )
+        sent += len(grant.allowed)
+    assert sent == episode_pacer.MAX_PER_WINDOW
+    assert grant.retry_in > episode_pacer.RETRY_SECONDS
+
+    now[0] += episode_pacer.WINDOW_SECONDS
+    grant = pacer.take([(99, 0)], playback_active=False, key=lambda e: e)
+    assert grant.allowed == [(99, 0)] and grant.retry_in is None

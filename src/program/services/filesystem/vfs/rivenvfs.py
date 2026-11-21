@@ -829,6 +829,11 @@ class RivenVFS(pyfuse3.Operations):
             f"removed {len(held[0])} held file(s) from the VFS"
         )
 
+    def has_active_streams(self) -> bool:
+        """Whether any file is being read right now (playback or a Plex scan)."""
+
+        return bool(self._active_streams)
+
     def playback_stopped(self, original_filename: str) -> None:
         """The caller stopped this file's playback before re-sourcing it.
 

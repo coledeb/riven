@@ -85,6 +85,21 @@ def process_event(
                 if processed_event.related_media_items:
                     items_to_submit += processed_event.related_media_items
 
+            if _pack_search_failed(existing_item) and overrides is None:
+                # Episodes headed for the scraper go out at the fallback pace
+                to_scrape = [
+                    e
+                    for e in items_to_submit
+                    if e.last_state in [States.Indexed, States.Unknown]
+                ]
+                if to_scrape:
+                    held = {id(e) for e in to_scrape} - {
+                        id(e) for e in _pace(existing_item, to_scrape)
+                    }
+                    items_to_submit = [
+                        e for e in items_to_submit if id(e) not in held
+                    ]
+
     elif existing_item and existing_item.last_state in [States.Indexed, States.Unknown]:
         next_service = services.scraping
 
@@ -189,14 +204,75 @@ def _scrape_targets(
 
     from program.program import Program
 
-    scraping = di[Program].services.scraping
+    program = di[Program]
+    scraping = program.services.scraping
     season = item
     assert isinstance(season, Season)
 
-    return [
+    due = [
         e
         for e in season.episodes
         if e.last_state in [States.Indexed, States.Unknown]
         and e.is_released
         and (overrides is not None or scraping.should_submit(e))
     ]
+
+    # A manual scrape isn't paced
+    if overrides is not None or not due:
+        return due
+
+    return _pace(season, due)
+
+
+def _pace(season: Season, due: list[MediaItem]) -> list[MediaItem]:
+    """Let a few of a failed season's episodes through; queue the rest for later."""
+
+    from program.program import Program
+    from program.services.scrapers.episode_pacer import pacer
+
+    program = di[Program]
+
+    grant = pacer.take(
+        due,
+        playback_active=_playback_active(program),
+        key=lambda e: e.id if e.id is not None else id(e),
+    )
+
+    if grant.retry_in is not None:
+        _retry_season_later(program, season, grant.retry_in)
+
+    return grant.allowed
+
+
+def _playback_active(program: Any) -> bool:
+    """Whether the VFS is serving any file (Plex playing or analysing)."""
+
+    filesystem = getattr(program.services, "filesystem", None)
+    vfs = filesystem and getattr(filesystem, "riven_vfs", None)
+
+    return bool(vfs and vfs.has_active_streams())
+
+
+def _retry_season_later(program: Any, season: Season, delay: float) -> None:
+    """Queue the season again so its next episodes go out after `delay`."""
+
+    from datetime import datetime, timedelta
+
+    from program.types import Event
+
+    em = getattr(program, "em", None)
+
+    if em is None or season.id is None or em._id_in_queue(season.id):
+        return
+
+    em.add_event_to_queue(
+        Event(
+            emitted_by="StateTransition",
+            item_id=season.id,
+            run_at=datetime.now() + timedelta(seconds=delay),
+        ),
+        log_message=False,
+    )
+    logger.debug(
+        f"Episode fallback paced: {season.log_string} continues in {int(delay)}s"
+    )
